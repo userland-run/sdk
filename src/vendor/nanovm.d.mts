@@ -101,10 +101,16 @@ export declare class NanoVM {
   restoreAndRun(snap: VMSnapshot, script: string, opts?: RestoreOptions): Promise<ExecResult>;
 
   // --- filesystem (fast path) ---
-  addFile(path: string, content: string | Uint8Array): void;
+  addFile(path: string, content: string | Uint8Array, mode?: number): void;
   readFileString(path: string): string | null;
   listDir(path: string): DirEntry[] | null;
   loadTarGz(buffer: ArrayBuffer | Uint8Array): Promise<void>;
+
+  // --- catalog lazy demand-fetch ---
+  registerLazyFile(
+    path: string,
+    meta: { size: number; mode: string | number; resolve: () => Promise<Uint8Array> },
+  ): void;
 
   // --- interactive stdin (present at runtime; beyond the v0.1 spec) ---
   writeStdin(bytes: Uint8Array | string): void;

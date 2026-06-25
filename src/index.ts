@@ -24,4 +24,29 @@ export { NodeRuntime } from "./node/node-runtime";
 
 export { NanoWorkerClient, createNanoWorker } from "./worker/client";
 
+export {
+  Catalog,
+  type CatalogOptions,
+  CdnClient,
+  type CdnOptions,
+  openChunkCache,
+  type ChunkCache,
+  installApp,
+  resolveIndex,
+  resolveManifest,
+  verifySigned,
+  sha256Hex,
+  canonicalize,
+  catalogPublicKey,
+  publicKeyFromB64,
+  CATALOG_PUBLIC_KEY_B64,
+  type InstallContext,
+  type Manifest,
+  type ManifestFile,
+  type SignedIndex,
+  type InstallTarget,
+  type InstallOptions,
+  type InstallProgress,
+} from "./catalog";
+
 export * from "./types";
