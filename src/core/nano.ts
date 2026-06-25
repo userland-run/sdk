@@ -16,6 +16,8 @@ import { resolveImage } from "./images";
 import { Vfs } from "./vfs";
 import { Shell } from "../shell/shell";
 import { NodeRuntime } from "../node/node-runtime";
+import { Catalog, type CatalogOptions } from "../catalog/catalog";
+import type { InstallOptions, Manifest } from "../catalog/types";
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {
@@ -118,6 +120,30 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   nodeRuntime(): NodeRuntime {
     return new NodeRuntime(this);
+  }
+
+  // --- catalog (install signed apps from the CDN) ---
+
+  private _catalog?: Catalog;
+
+  /** The lazily-created default {@link Catalog} (bundled key, OPFS cache, jsDelivr). */
+  catalog(opts?: CatalogOptions): Catalog {
+    return (this._catalog ??= new Catalog(opts));
+  }
+
+  /**
+   * Fetch, verify, and install a catalog app into this VM's filesystem. Every
+   * byte is checked against the bundled catalog key before it touches MemFS
+   * (spec §7.4). Returns the installed app's verified manifest.
+   *
+   * ```ts
+   * await nano.installApp("ripgrep");                 // eager
+   * await nano.installApp("ripgrep@14.1.0", { lazy: true });
+   * await nano.run("rg --version");
+   * ```
+   */
+  installApp(ref: string, opts?: InstallOptions): Promise<Manifest> {
+    return this.catalog().install(this.fs, ref, opts);
   }
 
   // --- interactive stdin (extension beyond spec §2.3) ---

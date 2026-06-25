@@ -85,6 +85,7 @@ class NanoVM {
     this._scratchPtr = 0; // WASM linear memory scratch buffer for virtual server
     this._snapshotRequested = false; // set by sentinel detection in _processFsRequest
     this._runId = 0; // incremented on each run; checked in _runLoop for cancellation
+    this._lazyFiles = new Map();      // path -> { meta, done } for catalog lazy demand-fetch
   }
 
   /**
@@ -306,8 +307,57 @@ class NanoVM {
   // Public API — File operations
   // ============================================================
 
-  addFile(path, content) {
-    this._memfs.createFile(path, content);
+  addFile(path, content, mode) {
+    const node = this._memfs.createFile(path, content);
+    // Honor an explicit mode (e.g. 0o755 for installed binaries) by setting the
+    // permission bits — same convention the tar loader uses for executables.
+    if (node && mode != null && (mode & 0o111)) node.mode = 0o100000 | (mode & 0o7777);
+    return node;
+  }
+
+  /**
+   * Register a file for catalog lazy demand-fetch: instead of materializing the
+   * bytes now, `meta.resolve()` is awaited the first time the guest opens/stats/
+   * reads `path`, then the result is written into MemFS. No effect on normal
+   * runs — the lazy map is empty unless an install used `{ lazy: true }`.
+   * @param {string} path
+   * @param {{ size:number, mode:string|number, resolve:() => Promise<Uint8Array> }} meta
+   */
+  registerLazyFile(path, meta) {
+    this._lazyFiles.set(path, { meta, done: false });
+  }
+
+  /** Peek the pending FS request's syscall + resolved path without servicing it. */
+  _peekFsRequest() {
+    const X = this._exports;
+    const reqPtr = X.vm_fs_request_ptr(this._vmPtr);
+    const dv = new DataView(this._memory.buffer);
+    const syscallNr = dv.getInt32(reqPtr, true);
+    const pathBytes = new Uint8Array(this._memory.buffer, reqPtr + 40, 256);
+    let pe = 0; while (pe < 256 && pathBytes[pe] !== 0) pe++;
+    const rawPath = pe > 0 ? new TextDecoder().decode(pathBytes.slice(0, pe)) : "";
+    return { syscallNr, path: rawPath ? this._resolvePath(rawPath) : "" };
+  }
+
+  /** If the pending request touches a not-yet-materialized lazy file, fetch it. */
+  async _maybeMaterializeLazy() {
+    if (this._lazyFiles.size === 0) return;
+    const { syscallNr, path } = this._peekFsRequest();
+    const triggers =
+      syscallNr === SYS_OPENAT || syscallNr === SYS_NEWFSTATAT ||
+      syscallNr === SYS_STATX  || syscallNr === SYS_PREAD64    || syscallNr === SYS_READ;
+    if (!triggers) return;
+    const entry = this._lazyFiles.get(path);
+    if (!entry || entry.done) return;
+    entry.done = true;
+    try {
+      const bytes = await entry.meta.resolve();
+      const mode = typeof entry.meta.mode === "string" ? parseInt(entry.meta.mode, 8) : entry.meta.mode;
+      this.addFile(path, bytes, mode);
+    } catch (e) {
+      entry.done = false; // allow a retry on the next access
+      console.error(`[nanovm] lazy materialize failed for ${path}:`, e);
+    }
   }
 
   readFileString(path) {
@@ -668,6 +718,10 @@ class NanoVM {
       }
 
       if (status === STATUS_FS_PENDING) {
+        // Catalog lazy demand-fetch: if this request first touches a registered
+        // lazy file, fetch+verify+materialize it before servicing. No-op (no
+        // await work) unless lazy files are registered.
+        if (this._lazyFiles.size !== 0) await this._maybeMaterializeLazy();
         this._processFsRequest();
         // Snapshot sentinel was hit — return control to caller
         if (this._snapshotRequested) {

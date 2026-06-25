@@ -23,9 +23,23 @@ export class Vfs {
 
   // --- fast path: direct MemFS, no VM step ---
 
-  /** Write a file; parent directories are auto-created. */
-  writeFile(path: string, content: string | Uint8Array): void {
-    this.vm.addFile(path, content);
+  /**
+   * Write a file; parent directories are auto-created. An optional `mode`
+   * (e.g. 0o755) sets the permission bits — used when installing executables.
+   */
+  writeFile(path: string, content: string | Uint8Array, mode?: number): void {
+    this.vm.addFile(path, content, mode);
+  }
+
+  /**
+   * Register a file for catalog lazy demand-fetch (satisfies the installer's
+   * {@link InstallTarget}): the bytes are materialized on first guest access.
+   */
+  registerLazyFile(
+    path: string,
+    meta: { size: number; mode: string | number; resolve: () => Promise<Uint8Array> },
+  ): void {
+    this.vm.registerLazyFile(path, meta);
   }
 
   readText(path: string): string | null {
