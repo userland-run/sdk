@@ -7,6 +7,8 @@ or connect the browser to HTTP apps running inside the VM.
 - **Code mode** — write files, run commands, read results.
 - **Terminal mode** — a renderer-agnostic shell engine (cwd/env state, `sh` semantics, node routing).
 - **Serve mode** — a service-worker bridge so a preview iframe can talk to in-VM HTTP servers.
+- **Scripting mode** — a sandboxed, capability-scoped JavaScript engine (Boa) that drives the VM
+  without a guest process: instant, no V8 boot, only the host functions you grant.
 - **Worker transport** — host the VM in a Web Worker so it never blocks the UI thread.
 
 ESM only, fully typed, zero runtime dependencies. The NanoVM runtime is vendored, so the package is
@@ -74,6 +76,34 @@ await rt.run("console.log(1 + 1)"); // fast restore
 await rt.run("console.log(Date.now())");
 ```
 
+### Scripting mode (Boa)
+```ts
+const nano = await createNano({
+  image: nanoImage({ baseUrl: "/nano/" }),
+  scripting: { wasm: "/nano/boa.wasm" },   // loaded lazily on first use
+});
+
+// One-shot automation driving the VM (capability-scoped: read-only fs + run).
+await nano.script(`
+  for (const f of nano.fs.list("/project/src")) {
+    const out = await nano.run("wc -l /project/src/" + f.name);
+    nano.log(out.stdout.trim());
+  }
+`, { expose: { fs: "readonly", run: true } });
+
+// Long-lived sandbox for untrusted plugins — no fs, no run, sync only.
+const sandbox = await nano.scripting({ expose: { fs: "none", run: false }, syncOnly: true });
+sandbox.registerFunction("emit", (event) => bus.publish(event));
+sandbox.defineGlobal("VERSION", "1.4.2");
+await sandbox.eval(pluginSource);
+sandbox.dispose();
+```
+
+The `expose` config is the security boundary: a fresh engine has **no** ambient authority — only
+the standard language plus what you grant. Same API in worker mode (`boa.wasm` loads in the worker
+next to the VM; `registerFunction` callbacks are proxied back to the main thread). The shell routes a
+leading `script ` line to the engine, e.g. `script "nano.fs.list('/').map(e => e.name).join(' ')"`.
+
 ## Consumer setup checklist
 
 1. Serve cross-origin isolated, **or** register `nano-sw.js` (exported as `./service-worker`).
@@ -99,6 +129,10 @@ The escape hatch: `nano.raw` is the underlying `NanoVM` instance. The SDK never 
 - **Interactive stdin.** Beyond the original spec, the runtime supports interactive stdin; the SDK
   exposes `nano.writeStdin()` / `setInteractiveStdin()` / `closeStdin()`. Most "terminal" usage is
   still line-by-line command dispatch.
+- **Scripting needs `boa.wasm`.** `nano.scripting()` / `nano.script()` throw unless you pass
+  `scripting: { wasm }` to `createNano`. Values cross the script boundary as JSON (binary via
+  `fs.readFile`/`writeFile` is marshalled as byte arrays). In worker mode, script console output is
+  streamed back combined (stdout+stderr) on the engine's `onStdout`.
 
 ## License
 

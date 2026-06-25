@@ -25,6 +25,8 @@ export interface ImageConfig {
 
 export interface NanoConfig {
   image: ImageConfig;
+  /** Scripting engine (Boa / boa.wasm). Omit to leave scripting unavailable. */
+  scripting?: ScriptingConfig;
   /**
    * Guest RAM in MB. When omitted, auto-sized for Node (~1.8GB; V8 OOMs below
    * that), keeping guest RAM + the wasm's embedded binaries under the 2GB
@@ -35,6 +37,73 @@ export interface NanoConfig {
   warmup?: boolean;
   /** Guard against missing cross-origin isolation. Default "assert". */
   crossOriginIsolation?: "assert" | "ignore";
+}
+
+// --- scripting (Boa) ---
+
+/** Scripting engine configuration (spec §6.1). */
+export interface ScriptingConfig {
+  /** URL or bytes for boa.wasm. If omitted, scripting is unavailable. */
+  wasm: BinarySource;
+}
+
+/**
+ * Capability grant for a script (spec §4.2). A fresh engine has NO powers; this
+ * is the single place that decides what the script can touch.
+ */
+export interface ExposeConfig {
+  /** Filesystem access. Default "none". */
+  fs?: "none" | "readonly" | "readwrite";
+  /** Allow busybox/sh via `nano.run`/`nano.sh`/`nano.exec`. Default false. */
+  run?: boolean;
+  /** Allow the in-VM node ELF via `nano.node`. Default false. */
+  node?: boolean;
+  /** Which boa_runtime WebAPI globals to enable. Default ["console"]. */
+  webapis?: Array<"console" | "encoding" | "url" | "timers">;
+}
+
+/** Loop-iteration and recursion caps that bound runaway scripts (spec §7). */
+export interface RuntimeLimits {
+  loopIterations?: number;
+  recursion?: number;
+}
+
+/** Options for {@link Nano.scripting} / {@link Nano.script} (spec §6.2). */
+export interface ScriptEngineOptions {
+  expose?: ExposeConfig;
+  /** Bridge global name. Default "nano". */
+  globalName?: string;
+  /** Read-only key/value bag injected as `<global>.env`. */
+  env?: Record<string, unknown>;
+  limits?: RuntimeLimits;
+  /** Host watchdog (ms). On expiry the engine is disposed and the call rejects. */
+  timeoutMs?: number;
+  /** Expose only synchronous bridge members (skip the async job pump). */
+  syncOnly?: boolean;
+  /** Route console.log/info output (stdout). */
+  onStdout?: (chunk: string) => void;
+  /** Route console.warn/error output (stderr). Combined with stdout in worker mode. */
+  onStderr?: (chunk: string) => void;
+}
+
+/**
+ * A sandboxed Boa scripting engine that can drive the VM (spec §6.2). Both the
+ * main-thread and worker transports expose this surface.
+ */
+export interface ScriptEngine {
+  /** Parse and evaluate `source`; resolves with the (JSON-marshalled) result. */
+  eval(source: string): Promise<unknown>;
+  /** Evaluate `source` as an ES module. */
+  evalModule(source: string, specifier?: string): Promise<unknown>;
+  /** Register a host function callable from scripts (async by default). */
+  registerFunction(
+    name: string,
+    fn: (...args: any[]) => unknown | Promise<unknown>,
+  ): void;
+  /** Define a plain-data global from a JSON-able value. */
+  defineGlobal(name: string, value: unknown): void;
+  /** Dispose the engine's context and free its heap. */
+  dispose(): void;
 }
 
 // --- execution ---
@@ -70,6 +139,14 @@ export interface ShellOptions {
   env?: Record<string, string>;
   /** Capture stderr separately via a redirect (loses live interleaving). Default false. */
   captureStderr?: boolean;
+  /**
+   * Command word that routes a line to the host-side scripting engine instead
+   * of BusyBox (spec §6.4). Default "script". Only active when the host exposes
+   * `script()` and scripting is configured.
+   */
+  scriptCommand?: string;
+  /** Capability grant for `script` lines. Default { fs:"readwrite", run:true, node:true }. */
+  scriptExpose?: ExposeConfig;
 }
 
 export interface ShellResult extends ExecResult {
@@ -89,6 +166,8 @@ export interface ShellHost {
   shExec(line: string, opts?: ExecOptions): Promise<ExecResult>;
   node(args: string[], opts?: ExecOptions): Promise<ExecResult>;
   readText(path: string): string | null | Promise<string | null>;
+  /** Host-side scripting (spec §6.4). Present on both transports; routes `script` lines. */
+  script?(source: string, opts?: ScriptEngineOptions): Promise<unknown>;
 }
 
 // --- serve ---

@@ -9,6 +9,8 @@ import type {
   ExecResult,
   NanoConfig,
   NodeRunOptions,
+  ScriptEngine,
+  ScriptEngineOptions,
   ShellHost,
   ShellOptions,
 } from "../types";
@@ -16,6 +18,11 @@ import type { Req, Res, WorkerTarget } from "./protocol";
 import { Shell } from "../shell/shell";
 
 type DataCb = (chunk: string) => void;
+type HostCallback = (...args: unknown[]) => unknown | Promise<unknown>;
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 function stripOnData<T extends { onData?: unknown }>(opts?: T): Omit<T, "onData"> | undefined {
   if (!opts) return undefined;
@@ -33,7 +40,48 @@ function collectTransfers(config: NanoConfig): Transferable[] {
   add(config.image.busybox);
   add(config.image.node);
   for (const o of config.image.overlays ?? []) add(o);
+  add(config.scripting?.wasm);
   return t;
+}
+
+/**
+ * Main-thread proxy for a worker-hosted {@link ScriptEngine}. eval/evalModule
+ * are RPC round-trips; registerFunction/defineGlobal are queued so they land
+ * before the next eval (the {@link ScriptEngine} surface returns void for them).
+ */
+class WorkerScriptEngine implements ScriptEngine {
+  /** Serializes registerFunction/defineGlobal ahead of the next eval. */
+  private ready: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    private readonly client: NanoWorkerClient,
+    private readonly engineId: number,
+    /** Combined console sink (worker mode merges stdout+stderr). */
+    private readonly onData?: DataCb,
+  ) {}
+
+  async eval(source: string): Promise<unknown> {
+    await this.ready;
+    return this.client.call("script", "eval", [this.engineId, source], this.onData);
+  }
+  async evalModule(source: string, specifier?: string): Promise<unknown> {
+    await this.ready;
+    return this.client.call("script", "evalModule", [this.engineId, source, specifier], this.onData);
+  }
+  registerFunction(name: string, fn: (...args: any[]) => unknown | Promise<unknown>): void {
+    const callbackId = this.client.registerCallback(fn as HostCallback);
+    this.enqueue(["registerFunction", [this.engineId, name, callbackId]]);
+  }
+  defineGlobal(name: string, value: unknown): void {
+    this.enqueue(["defineGlobal", [this.engineId, name, value]]);
+  }
+  dispose(): void {
+    void this.client.call("script", "disposeEngine", [this.engineId]);
+  }
+
+  private enqueue([method, args]: [string, unknown[]]): void {
+    this.ready = this.ready.then(() => this.client.call("script", method, args));
+  }
 }
 
 /** Async filesystem proxy (every method is an RPC round-trip). */
@@ -101,6 +149,9 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
     number,
     { resolve: (v: unknown) => void; reject: (e: unknown) => void; onData?: DataCb }
   >();
+  /** Main-thread script callbacks invoked via worker reverse-RPC (registerFunction). */
+  private callbackSeq = 1;
+  private readonly callbacks = new Map<number, HostCallback>();
 
   private constructor(private readonly worker: Worker) {
     this.fs = new WorkerFs(this);
@@ -115,6 +166,10 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   }
 
   private onMessage(res: Res): void {
+    if (res.type === "callback") {
+      void this.handleCallback(res);
+      return;
+    }
     const p = this.pending.get(res.id);
     if (!p) return;
     if (res.type === "data") {
@@ -124,6 +179,29 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
     this.pending.delete(res.id);
     if (res.type === "result") p.resolve(res.value);
     else p.reject(new Error(res.error));
+  }
+
+  /** Reverse-RPC: run a registered script callback and return its result to the worker. */
+  private async handleCallback(res: Extract<Res, { type: "callback" }>): Promise<void> {
+    const reply = (msg: Extract<Req, { kind: "callbackResult" }>): void => this.worker.postMessage(msg);
+    const fn = this.callbacks.get(res.callbackId);
+    if (!fn) {
+      reply({ id: res.id, kind: "callbackResult", ok: false, error: `unknown callback ${res.callbackId}` });
+      return;
+    }
+    try {
+      const value = await fn(...res.args);
+      reply({ id: res.id, kind: "callbackResult", ok: true, value: value === undefined ? null : value });
+    } catch (e) {
+      reply({ id: res.id, kind: "callbackResult", ok: false, error: errMsg(e) });
+    }
+  }
+
+  /** Register a main-thread script callback; returns its reverse-RPC id. */
+  registerCallback(fn: HostCallback): number {
+    const id = this.callbackSeq++;
+    this.callbacks.set(id, fn);
+    return id;
   }
 
   private onError(ev: ErrorEvent): void {
@@ -182,6 +260,24 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   destroy(): void {
     void this.call("nano", "destroy", []);
     this.worker.terminate();
+  }
+
+  // --- scripting (boa.wasm hosted in the worker; spec §6.5) ---
+  async scripting(opts: ScriptEngineOptions = {}): Promise<ScriptEngine> {
+    // onStdout/onStderr are functions — they can't cross the worker boundary, so
+    // they stay on the main thread; console output streams back via the eval
+    // data channel (combined stdout+stderr in worker mode).
+    const { onStdout, onStderr, ...serializable } = opts;
+    const engineId = (await this.call("script", "createEngine", [serializable])) as number;
+    return new WorkerScriptEngine(this, engineId, onStdout ?? onStderr);
+  }
+  async script(source: string, opts?: ScriptEngineOptions): Promise<unknown> {
+    const engine = await this.scripting(opts);
+    try {
+      return await engine.eval(source);
+    } finally {
+      engine.dispose();
+    }
   }
 
   // --- factories ---

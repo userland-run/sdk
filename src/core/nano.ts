@@ -3,11 +3,15 @@
 // Part of the userland.run SDK; dual-licensed - see LICENSE.md.
 
 import { NanoVM } from "../vendor/nanovm.mjs";
+import type { BoaRuntime } from "../vendor/boa.mjs";
 import type {
+  BinarySource,
   ConnectionInjector,
   ExecOptions,
   ExecResult,
   NanoConfig,
+  ScriptEngine,
+  ScriptEngineOptions,
   ShellHost,
   ShellOptions,
 } from "../types";
@@ -16,6 +20,7 @@ import { resolveImage } from "./images";
 import { Vfs } from "./vfs";
 import { Shell } from "../shell/shell";
 import { NodeRuntime } from "../node/node-runtime";
+import { createLocalEngine, loadBoaRuntime, type ScriptVmDriver } from "../scripting/script-engine";
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {
@@ -51,6 +56,9 @@ export class Nano implements ShellHost, ConnectionInjector {
   readonly fs: Vfs;
 
   private execSeq = 0;
+  /** boa.wasm source from NanoConfig.scripting (lazy-loaded on first scripting()). */
+  private scriptingWasm?: BinarySource;
+  private boaRuntime: BoaRuntime | null = null;
 
   private constructor(raw: NanoVM) {
     this.raw = raw;
@@ -83,6 +91,7 @@ export class Nano implements ShellHost, ConnectionInjector {
     }
 
     const nano = new Nano(raw);
+    nano.scriptingWasm = config.scripting?.wasm;
     if (config.warmup !== false) {
       // Pre-JIT exec() with a no-op; best-effort.
       try {
@@ -136,6 +145,50 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   nodeRuntime(): NodeRuntime {
     return new NodeRuntime(this);
+  }
+
+  // --- scripting (host-side Boa engine) ---
+
+  /**
+   * Create a sandboxed Boa scripting engine that can drive this VM. boa.wasm is
+   * loaded lazily on first use, so callers who never script pay nothing
+   * (spec §6.2). Requires `scripting.wasm` in the {@link NanoConfig}.
+   */
+  async scripting(opts?: ScriptEngineOptions): Promise<ScriptEngine> {
+    if (!this.scriptingWasm) {
+      throw new Error(
+        "nano-sdk: scripting is not configured. Pass `scripting: { wasm }` to createNano().",
+      );
+    }
+    if (!this.boaRuntime) this.boaRuntime = await loadBoaRuntime(this.scriptingWasm);
+    return createLocalEngine(this.boaRuntime, this.scriptDriver(), opts);
+  }
+
+  /** One-shot: create an engine, evaluate `source`, dispose, return the value. */
+  async script(source: string, opts?: ScriptEngineOptions): Promise<unknown> {
+    const engine = await this.scripting(opts);
+    try {
+      return await engine.eval(source);
+    } finally {
+      engine.dispose();
+    }
+  }
+
+  /** Bridge driver: synchronous MemFS + this Nano's async exec surface. */
+  private scriptDriver(): ScriptVmDriver {
+    return {
+      fs: {
+        readText: (p) => this.fs.readText(p),
+        readFile: (p) => this.fs.readFile(p),
+        list: (p) => this.fs.list(p),
+        exists: (p) => this.fs.exists(p),
+        writeFile: (p, bytes) => this.fs.writeFile(p, bytes),
+      },
+      run: (cmd) => this.run(cmd),
+      exec: (argv) => this.exec(argv),
+      sh: (line) => this.shExec(line),
+      node: (args) => this.node(args),
+    };
   }
 
   // --- interactive stdin (extension beyond spec §2.3) ---

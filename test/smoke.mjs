@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { createNano } from "../dist/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const BOA = join(here, "../../nano/wasm/boa.wasm"); // scripting engine
 const WASM = join(here, "../../nano/wasm/nano.wasm"); // bundled build
 
 let failed = 0;
@@ -30,7 +31,12 @@ function check(name, cond, detail = "") {
 const wasm = new Uint8Array(readFileSync(WASM));
 console.log(`nano-sdk smoke — bundled wasm ${(wasm.length / 1e6).toFixed(0)}MB\n`);
 
-const nano = await createNano({ image: { wasm }, crossOriginIsolation: "ignore" });
+const boa = new Uint8Array(readFileSync(BOA));
+const nano = await createNano({
+  image: { wasm },
+  scripting: { wasm: boa },
+  crossOriginIsolation: "ignore",
+});
 
 // 1. BusyBox run
 {
@@ -88,6 +94,41 @@ if (process.env.SMOKE_NODE === "1") {
   check("nodeRuntime.run isolated", r2.stdout.includes("42"), JSON.stringify(r2.stdout.slice(0, 60)));
 } else {
   console.log("  SKIP  node + nodeRuntime (set SMOKE_NODE=1 to include)");
+}
+
+// 6. scripting (Boa) — main-thread ScriptEngine + shell `script` routing.
+{
+  // pure eval + JSON marshalling
+  const v = await nano.script("({ sum: [1,2,3].reduce((a,b)=>a+b,0) })", { expose: {} });
+  check("script eval + marshal", v && v.sum === 6, JSON.stringify(v));
+
+  // capability model: no run granted
+  check("script capability denial", (await nano.script("typeof nano.run", { expose: {} })) === "undefined");
+
+  // fs (readonly) + run bridge driving the real VM
+  nano.fs.writeFile("/s/nums.txt", "5\n2\n9\n");
+  const driven = await nano.script(
+    `(async () => {
+       const txt = nano.fs.readText("/s/nums.txt");
+       const top = await nano.run("sort -rn /s/nums.txt");
+       return { count: txt.trim().split("\\n").length, top: top.stdout.trim().split("\\n")[0] };
+     })()`,
+    { expose: { fs: "readonly", run: true } },
+  );
+  check("script drives VM (fs+run)", driven.count === 3 && driven.top === "9", JSON.stringify(driven));
+
+  // long-lived engine: registerFunction (async) + defineGlobal
+  const engine = await nano.scripting({ expose: {} });
+  engine.defineGlobal("VERSION", "1.4.2");
+  engine.registerFunction("fetchRow", async (id) => ({ id, name: `row-${id}` }));
+  const reg = await engine.eval(`(async () => VERSION + ":" + (await fetchRow(7)).name)()`);
+  check("script registerFunction + defineGlobal", reg === "1.4.2:row-7", JSON.stringify(reg));
+  engine.dispose();
+
+  // shell `script` routing (§6.4)
+  const sh = nano.shell({ cwd: "/" });
+  const sr = await sh.run(`script "nano.fs.list('/s').map(e => e.name).join(' ')"`);
+  check("shell script routing", sr.exitCode === 0 && sr.output.includes("nums.txt"), JSON.stringify(sr.output));
 }
 
 nano.destroy();
