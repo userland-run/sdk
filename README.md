@@ -88,8 +88,14 @@ The escape hatch: `nano.raw` is the underlying `NanoVM` instance. The SDK never 
   combined output. Split via the shell's `captureStderr` (costs a redirect, loses live interleaving).
 - **Servers don't resolve.** A listening server never resolves its run promise; use `startServer`
   (readiness by output regex, default `/listening/i`) and `stop()` to cancel.
+- **RAM is auto-sized for Node.** V8 needs ~1.8GB of guest RAM to boot (512MB OOMs). When you omit
+  `ramMB`, the SDK sizes it to keep guest RAM + the wasm's embedded binaries under the 2GB ceiling.
+  BusyBox-only consumers can pass a smaller `ramMB` to shrink the footprint.
 - **Node isolation.** Every `NodeRuntime.run` restores the *same* warm snapshot — runs don't see each
   other's mutations. Seed per-run inputs with `extraFiles`.
+- **Warm-restore exit code.** `NodeRuntime.run` output is reliable, but its `exitCode` is not: V8's
+  platform worker thread can't be joined after a snapshot restore, so node aborts (exit `134`) *after*
+  printing correct output. Check `stdout`, not `exitCode`, for warm runs. Cold `nano.node()` exits cleanly.
 - **Interactive stdin.** Beyond the original spec, the runtime supports interactive stdin; the SDK
   exposes `nano.writeStdin()` / `setInteractiveStdin()` / `closeStdin()`. Most "terminal" usage is
   still line-by-line command dispatch.

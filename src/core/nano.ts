@@ -11,7 +11,7 @@ import type {
   ShellHost,
   ShellOptions,
 } from "../types";
-import { toRuntimeOpts } from "./exec-opts";
+import { toRuntimeOpts, NODE_DEFAULT_MAX_STEPS } from "./exec-opts";
 import { resolveImage } from "./images";
 import { Vfs } from "./vfs";
 import { Shell } from "../shell/shell";
@@ -20,6 +20,23 @@ import { NodeRuntime } from "../node/node-runtime";
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {
   return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Pick a guest-RAM size when the caller doesn't specify one.
+ *
+ * Node's V8 needs ~1.8GB of guest RAM to initialize its sandbox/code range —
+ * 512MB OOMs at startup (`SegmentedTable::InitializeTable`). We mirror the nano
+ * CLI runner's heuristic: target ~2GB of linear memory total, subtracting the
+ * wasm's own static data (bundled builds embed ~130MB of binaries) so guest RAM
+ * plus that data stays under the 2GB ceiling. For a URL source (size unknown)
+ * we assume the bundled build. BusyBox-only callers can pass a smaller `ramMB`.
+ */
+function defaultRamMB(wasm: unknown): number {
+  const bytes =
+    wasm instanceof Uint8Array || wasm instanceof ArrayBuffer ? wasm.byteLength : undefined;
+  const wasmMB = bytes !== undefined ? bytes / (1024 * 1024) : 138; // URL: assume bundled
+  return wasmMB > 1 ? Math.floor(2000 - wasmMB - 20) : 2000;
 }
 
 /**
@@ -56,9 +73,10 @@ export class Nano implements ShellHost, ConnectionInjector {
     }
 
     const { createOpts, overlays, revoke } = await resolveImage(config.image);
+    const ramMB = config.ramMB ?? defaultRamMB(createOpts.wasm);
     let raw: NanoVM;
     try {
-      raw = await NanoVM.create({ ...createOpts, ramMB: config.ramMB ?? 512 });
+      raw = await NanoVM.create({ ...createOpts, ramMB });
       for (const ov of overlays) await raw.loadTarGz(ov);
     } finally {
       revoke();
@@ -85,7 +103,7 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   /** Run the node ELF with an explicit argv. */
   node(args: string[], opts?: ExecOptions): Promise<ExecResult> {
-    return this.raw.node(...args, toRuntimeOpts(opts));
+    return this.raw.node(...args, toRuntimeOpts(opts, NODE_DEFAULT_MAX_STEPS));
   }
 
   /** Exact program + args, quoted, executed via sh (no shell operators). */

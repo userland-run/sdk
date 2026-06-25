@@ -4,6 +4,7 @@
 
 import type { ExecResult, NodeRunOptions } from "../types";
 import type { Nano } from "../core/nano";
+import { NODE_DEFAULT_MAX_STEPS } from "../core/exec-opts";
 import type { RestoreOptions, VMSnapshot } from "../vendor/nanovm.mjs";
 
 /**
@@ -33,7 +34,9 @@ export class NodeRuntime {
 
     const ro: RestoreOptions = {};
     if (opts?.onData) ro.onStdout = opts.onData;
-    if (opts?.maxSteps !== undefined) ro.maxSteps = opts.maxSteps;
+    // restoreAndRun() defaults to the 2M BusyBox budget; a warm V8 still needs
+    // far more to read /dev/__run__, compile, and run the script (spec §5.3).
+    ro.maxSteps = opts?.maxSteps ?? NODE_DEFAULT_MAX_STEPS;
     if (opts?.extraFiles) ro.extraFiles = opts.extraFiles;
 
     return this.nano.raw.restoreAndRun(snap, source, ro);

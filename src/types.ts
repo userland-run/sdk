@@ -25,7 +25,11 @@ export interface ImageConfig {
 
 export interface NanoConfig {
   image: ImageConfig;
-  /** Guest RAM in MB. Default 512. */
+  /**
+   * Guest RAM in MB. When omitted, auto-sized for Node (~1.8GB; V8 OOMs below
+   * that), keeping guest RAM + the wasm's embedded binaries under the 2GB
+   * linear-memory ceiling. BusyBox-only callers can pass a smaller value.
+   */
   ramMB?: number;
   /** Pre-JIT the interpreter with a no-op run. Default true. */
   warmup?: boolean;

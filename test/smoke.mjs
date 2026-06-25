@@ -67,14 +67,27 @@ const nano = await createNano({ image: { wasm }, crossOriginIsolation: "ignore" 
   check("shell cwd tracking", sh.cwd === "/app/x", sh.cwd);
 }
 
-// 5. node runtime (slow — opt-in)
+// 5. node (slow — opt-in). Runs AFTER the BusyBox/sh commands above, which
+// exercises the per-run block-cache reset (stale `sh` blocks must not corrupt
+// node's image). Assertions check OUTPUT, not exitCode: a warm restore leaves
+// V8's platform worker thread unjoinable at shutdown, so it aborts (exit 134)
+// *after* writing correct output — the same contract as nano's test_snapshot.
 if (process.env.SMOKE_NODE === "1") {
+  // Cold node() through _execute — exits cleanly (0) even after the sh runs.
+  const cold = await nano.node(["-e", "console.log(20 + 3)"]);
+  check("node() cold", cold.exitCode === 0 && cold.stdout.includes("23"), JSON.stringify(cold.stdout));
+
+  // Warm snapshot fast path: warmup must reach the snapshot sentinel, and each
+  // restore must produce correct output.
   const rt = nano.nodeRuntime();
   await rt.warmup();
-  const r = await rt.run("console.log(2 + 2)");
-  check("nodeRuntime.run", r.stdout.includes("4"), JSON.stringify(r.stdout));
+  check("nodeRuntime.isWarm", rt.isWarm);
+  const r1 = await rt.run("console.log(2 + 2)");
+  check("nodeRuntime.run", r1.stdout.includes("4"), JSON.stringify(r1.stdout.slice(0, 60)));
+  const r2 = await rt.run("console.log(7 * 6)");
+  check("nodeRuntime.run isolated", r2.stdout.includes("42"), JSON.stringify(r2.stdout.slice(0, 60)));
 } else {
-  console.log("  SKIP  nodeRuntime (set SMOKE_NODE=1 to include)");
+  console.log("  SKIP  node + nodeRuntime (set SMOKE_NODE=1 to include)");
 }
 
 nano.destroy();
