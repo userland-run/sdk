@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: MPL-2.0 OR LicenseRef-UEL
+# Copyright (C) 2026 And The Next GmbH - https://userland.run
+#
+# Build the SDK, run the node:test suite against a BusyBox-capable nano.wasm,
+# emit a userland-results.json (contract v1), and publish it to the userland.run
+# status hub on default-branch pushes.
+#
+# ── Runtime dependency (read this before enabling) ───────────────────────────
+# The suite drives the *built* SDK against a real nano.wasm and runs BusyBox
+# commands (echo / sort / mkdir / cp …), so it needs a wasm that BUNDLES BusyBox.
+#
+#   • The bundled wasm/nano.wasm used in local dev is ~138MB — too large to ship
+#     as a CI download here.
+#   • The nano `release` workflow currently publishes ONLY `nano.min.wasm` and
+#     `nano.trace.wasm` (plus nano-syscalls.json). NEITHER bundles BusyBox, so
+#     neither can run `echo` — they would make every test fail at boot.
+#
+# This workflow therefore fetches `nano.busybox.wasm` (and `boa.wasm` for the
+# scripting tests) from a nano release. *** That asset does not exist yet *** —
+# the nano release workflow must start publishing a small BusyBox-bundled build
+# under that name (e.g. `make build-busybox`) before this CI can go green. Until
+# then the "Run suite + emit results" step will fail at boot; track that as the
+# blocking prerequisite.
+#
+# The slow Node-runtime path (SMOKE_NODE) stays OFF here — it needs ~1.8GB guest
+# RAM and a node-bundled wasm; it is covered by the nano conformance pipeline.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-unit:
+    runs-on: ubuntu-latest
+    env:
+      # Override with the repo/org variable NANO_RELEASE to pin a nano tag.
+      NANO_RELEASE: ${{ vars.NANO_RELEASE || 'latest' }}
+      NANO_WASM: ${{ github.workspace }}/.nano-runtime/nano.busybox.wasm
+      NANO_BOA: ${{ github.workspace }}/.nano-runtime/boa.wasm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install + build
+        run: |
+          npm ci
+          npm run build
+
+      # Fetch the BusyBox-bundled runtime (+ boa) the suite boots against.
+      # See the header note: nano.busybox.wasm must be published to a nano release.
+      - name: Fetch nano runtime (busybox + boa)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .nano-runtime
+          if [ "$NANO_RELEASE" = "latest" ]; then
+            gh release download --repo userland-run/nano \
+              --pattern 'nano.busybox.wasm' --pattern 'boa.wasm' \
+              --dir .nano-runtime
+          else
+            gh release download "$NANO_RELEASE" --repo userland-run/nano \
+              --pattern 'nano.busybox.wasm' --pattern 'boa.wasm' \
+              --dir .nano-runtime
+          fi
+          ls -lh .nano-runtime
+
+      - name: Run suite + emit results
+        run: node test/run-suite.mjs > userland-results.json
+
+      - name: Show results
+        run: cat userland-results.json
+
+      - name: Publish to status hub
+        if: github.ref == 'refs/heads/main'
+        uses: userland-run/status/.github/actions/publish-results@main
+        with:
+          source: sdk
+          suite: sdk-unit
+          results-file: userland-results.json
+          token: ${{ secrets.STATUS_DISPATCH_TOKEN }}
