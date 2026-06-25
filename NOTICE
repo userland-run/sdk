@@ -1,0 +1,20 @@
+# Third-Party Notices — @userland-run/nano-sdk
+
+The SDK is licensed as described in LICENSE.md (MPL-2.0 OR LicenseRef-UEL). This
+file lists third-party material the package redistributes.
+
+## Vendored NanoVM runtime
+
+The SDK vendors the NanoVM browser runtime (`container/nanovm.mjs`,
+`container/memfs.mjs`) and ships the NanoVM WebAssembly artifact. The copyright
+in NanoVM is held by And The Next GmbH; as the rights holder it licenses that
+runtime under MPL-2.0 within this SDK, even though the public `userland-run/nano`
+repository is offered under AGPL-3.0 (see spec §13 — relicensing is a
+rights-holder decision).
+
+## Transitively bundled guest binaries
+
+The NanoVM WebAssembly artifact embeds unmodified upstream RISC-V binaries
+(BusyBox — GPL-2.0-only; Node.js — MIT-style; and the devenv toolchain) that run
+as guest programs under emulation. See the NOTICE in `userland-run/nano` for the
+full list and their licenses.

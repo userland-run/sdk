@@ -1,0 +1,43 @@
+{
+  "name": "@userland-run/nano-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for NanoVM — run real Linux binaries (BusyBox, Node.js) in the browser.",
+  "type": "module",
+  "license": "MPL-2.0 OR LicenseRef-UEL",
+  "author": "Dietmar Rietsch / And The Next GmbH",
+  "homepage": "https://github.com/userland-run/sdk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/userland-run/sdk.git"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "static",
+    "README.md",
+    "LICENSE",
+    "LICENSE.md",
+    "NOTICE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/worker.d.ts",
+      "import": "./dist/worker/worker.js"
+    },
+    "./service-worker": "./static/nano-sw.js"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node test/smoke.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}
