@@ -946,6 +946,14 @@ class NanoVM {
         if (this._snapshotRequested) {
           return { exitCode: 0, stdout: this._stdout, snapshotReady: true };
         }
+        // Network sentinel (/dev/__net__): do the host fetch (async run loop);
+        // a read that triggered it is served with the response.
+        if (this._asyncNet) {
+          const an = this._asyncNet;
+          this._asyncNet = null;
+          await this._netFetch();
+          if (an.read) this._serveNetRead(an.bufPtr, an.bufLen);
+        }
         iter--; // FS operations don't consume execution budget
         if (++yieldCounter % 200 === 0) {
           await new Promise(r => setTimeout(r, 0));
@@ -1299,6 +1307,76 @@ class NanoVM {
     dv2.setInt32(v + 528, STATUS_OK, true);
   }
 
+  // ---- Network bridge (Tier 1): host-brokered fetch via /dev/__net__ ----
+  setNetwork({ corsProxyUrl = null, disabled = false } = {}) {
+    this._corsProxyUrl = corsProxyUrl;
+    this._netDisabled = !!disabled;
+  }
+
+  async _netFetch() {
+    const parts = this._netReq || []; this._netReq = [];
+    let total = 0; for (const p of parts) total += p.length;
+    const reqBytes = new Uint8Array(total); let o = 0;
+    for (const p of parts) { reqBytes.set(p, o); o += p.length; }
+    this._netResp = await this._doNetFetch(reqBytes);
+    this._netRespPos = 0;
+  }
+
+  async _doNetFetch(reqBytes) {
+    const text = new TextDecoder().decode(reqBytes);
+    const sep = text.indexOf("\n\n");
+    const head = sep >= 0 ? text.slice(0, sep) : text;
+    const body = sep >= 0 ? text.slice(sep + 2) : "";
+    const lines = head.split("\n").map((l) => l.replace(/\r$/, "")).filter(Boolean);
+    const first = (lines.shift() || "GET ").trim().split(/\s+/);
+    const method = (first[0] || "GET").toUpperCase();
+    const url = first[1];
+    const headers = {};
+    for (const l of lines) { const i = l.indexOf(":"); if (i > 0) headers[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
+    if (!url) return this._httpResp(400, "Bad Request", {}, "nano-net: missing URL");
+    const opts = { method, headers };
+    if (method !== "GET" && method !== "HEAD" && body) opts.body = body;
+    try {
+      let resp;
+      try { resp = await fetch(url, opts); }
+      catch (e) {
+        if (this._corsProxyUrl) {
+          const u = this._corsProxyUrl + (this._corsProxyUrl.includes("?") ? "&" : "?") + "apiurl=" + encodeURIComponent(url);
+          resp = await fetch(u, opts);
+        } else throw e;
+      }
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      const hdrs = {}; resp.headers.forEach((v, k) => { hdrs[k] = v; });
+      return this._httpResp(resp.status, resp.statusText || "", hdrs, buf);
+    } catch (e) {
+      return this._httpResp(502, "Bad Gateway", {}, "nano-net: " + (e?.message || String(e)));
+    }
+  }
+
+  _serveNetRead(bufPtr, bufLen) {
+    const dv = new DataView(this._memory.buffer);
+    const resp = this._netResp || new Uint8Array(0);
+    const pos = this._netRespPos || 0;
+    const n = Math.min(bufLen, resp.length - pos);
+    if (n > 0) {
+      new Uint8Array(this._memory.buffer, this._ramPtr + bufPtr, n).set(resp.subarray(pos, pos + n));
+      this._netRespPos = pos + n;
+    }
+    this._setA0(dv, n);
+    dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
+  }
+
+  _httpResp(status, statusText, headers, body) {
+    const bodyBytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+    let head = `HTTP/1.1 ${status} ${statusText}\r\n`;
+    for (const [k, v] of Object.entries(headers)) head += `${k}: ${v}\r\n`;
+    head += `content-length: ${bodyBytes.length}\r\n\r\n`;
+    const headBytes = new TextEncoder().encode(head);
+    const out = new Uint8Array(headBytes.length + bodyBytes.length);
+    out.set(headBytes, 0); out.set(bodyBytes, headBytes.length);
+    return out;
+  }
+
   _processFsRequest() {
     const X = this._exports;
     const reqPtr = X.vm_fs_request_ptr(this._vmPtr);
@@ -1373,6 +1451,15 @@ class NanoVM {
       dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
       return;
     }
+    // Network sentinel: openat /dev/__net__ → host_fd -98 (host-brokered fetch).
+    if (syscallNr === SYS_OPENAT && path === "/dev/__net__") {
+      if (this._netDisabled) { this._setA0(dv, -13); dv.setInt32(this._vmPtr + 528, STATUS_OK, true); return; }
+      const newGfd = this._fdAlloc(dv);
+      if (newGfd >= 0) this._fdWrite(dv, newGfd, FD_TYPE_FILE, -98, 0, 0);
+      this._setA0(dv, newGfd >= 0 ? newGfd : -28);
+      dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
+      return;
+    }
     // Handle sentinel fd operations (host_fd === -99)
     if (gfd >= 0 && gfd < MAX_FDS) {
       const fe = this._fdRead(dv, gfd);
@@ -1400,6 +1487,42 @@ class NanoVM {
           // Close triggers the snapshot — writeFileSync is complete
           this._fdClear(dv, gfd);
           this._snapshotRequested = true;
+          this._setA0(dv, 0);
+          dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
+          return;
+        }
+      }
+      // Network sentinel fd (host_fd === -98): accumulate request on write, serve
+      // the buffered response on read; the fetch is awaited in the run loop.
+      if (fe.host_fd === -98) {
+        if (syscallNr === SYS_WRITE) {
+          const count = bufLen || arg1;
+          (this._netReq = this._netReq || []).push(
+            new Uint8Array(this._memory.buffer, ramPtr + bufPtr, count).slice());
+          this._setA0(dv, count);
+          dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
+          return;
+        }
+        if (syscallNr === SYS_READ) {
+          if (this._netReq && this._netReq.length && !this._netResp) {
+            this._asyncNet = { read: true, bufPtr, bufLen };
+            return; // run loop fetches then serves this read
+          }
+          this._serveNetRead(bufPtr, bufLen);
+          return;
+        }
+        if (syscallNr === SYS_FSTAT) {
+          const statBufPhys = ramPtr + (arg1 >>> 0);
+          new Uint8Array(this._memory.buffer, statBufPhys, 128).fill(0);
+          const sdv = new DataView(this._memory.buffer, statBufPhys, 128);
+          sdv.setUint32(16, 0o100644, true); sdv.setUint32(20, 1, true); sdv.setInt32(56, 4096, true);
+          this._setA0(dv, 0);
+          dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
+          return;
+        }
+        if (syscallNr === SYS_CLOSE) {
+          this._fdClear(dv, gfd);
+          if (this._netReq && this._netReq.length && !this._netResp) this._asyncNet = { read: false };
           this._setA0(dv, 0);
           dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
           return;
