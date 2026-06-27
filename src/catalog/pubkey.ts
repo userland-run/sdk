@@ -9,8 +9,5 @@
  * signature/hash check (spec §7.4).
  *
  * This MUST stay in sync with `catalog/keys/catalog.pub` in the catalog repo.
- *
- * ⚠️ Development placeholder — regenerate for production with the catalog's
- *    `tools/gen-keypair.mjs` and copy the new public key here.
  */
-export const CATALOG_PUBLIC_KEY_B64 = "GwNoyczS8HN1lg05AKcD5ycQ5faAwztpev3CGwRpNf4=";
+export const CATALOG_PUBLIC_KEY_B64 = "tjbmwdQ7vzvHKAw5B69DUvCU9e3ZeLhv2P8Y73/HckU=";
