@@ -40,6 +40,18 @@ export interface SignedIndex {
   generation: number;
   nano_min_version: string;
   apps: Record<string, string>; // "name@version" -> manifest sha256 (a cas blob)
+  bundles?: Record<string, string>; // "topic-slug" -> bundle manifest sha256
+  sha256: string;
+  signature: string;
+}
+
+/** A signed topic bundle: the set of app refs to install together (bottling). */
+export interface BundleManifest {
+  name: string;        // the topic slug, e.g. "data"
+  kind: "bundle";
+  topic: string;       // the display topic, e.g. "Data"
+  generation: number;
+  apps: string[];      // member "name@version" refs
   sha256: string;
   signature: string;
 }

@@ -4,14 +4,21 @@
 
 import { CdnClient, type CdnOptions } from "./cdn";
 import { openChunkCache, type ChunkCache } from "./cache";
-import { publicKeyFromB64 } from "./crypto";
+import { publicKeyFromB64, sha256Hex, verifySigned } from "./crypto";
 import {
   installApp,
   resolveIndex,
   resolveManifest,
   type InstallContext,
 } from "./installer";
-import type { InstallOptions, InstallTarget, Manifest, SignedIndex } from "./types";
+import type { BundleManifest, InstallOptions, InstallTarget, Manifest, SignedIndex } from "./types";
+
+/** Result of installing a topic bundle. */
+export interface BundleInstallResult {
+  topic: string;
+  installed: Manifest[];
+  failed: string[];
+}
 
 export interface CatalogOptions {
   /** CDN origin override (R2 mirror, local static dir for tests). */
@@ -62,5 +69,35 @@ export class Catalog {
   /** Install `name`/`name@version` into `target` (e.g. `nano.fs`). */
   async install(target: InstallTarget, ref: string, opts?: InstallOptions): Promise<Manifest> {
     return installApp(target, ref, await this.ctx(), opts);
+  }
+
+  /** A verified topic-bundle manifest (the set of app refs in that topic). */
+  async bundleManifest(slug: string): Promise<BundleManifest> {
+    const ctx = await this.ctx();
+    const idx = await resolveIndex(ctx);
+    const sha = idx.bundles?.[slug];
+    if (!sha) throw new Error(`catalog: bundle not found: ${slug}`);
+    const bytes = await ctx.cdn.fetchBytes(await ctx.cdn.casUrl(sha));
+    if ((await sha256Hex(bytes)) !== sha) throw new Error(`catalog: bundle hash mismatch ${slug}`);
+    const bundle = JSON.parse(new TextDecoder().decode(bytes)) as BundleManifest;
+    const v = await verifySigned(bundle as unknown as Record<string, unknown>, ctx.key);
+    if (!v.ok) throw new Error(`catalog: bundle signature invalid for ${slug} (${v.reason})`);
+    return bundle;
+  }
+
+  /**
+   * Install every app in a topic bundle into `target`. Members share the same
+   * musl, so the CAS dedups their chunks — a topic costs little more than its
+   * largest member. A member that fails to install is reported, not thrown.
+   */
+  async installBundle(target: InstallTarget, slug: string, opts?: InstallOptions): Promise<BundleInstallResult> {
+    const bundle = await this.bundleManifest(slug);
+    const installed: Manifest[] = [];
+    const failed: string[] = [];
+    for (const ref of bundle.apps) {
+      try { installed.push(await this.install(target, ref, opts)); }
+      catch { failed.push(ref); }
+    }
+    return { topic: bundle.topic, installed, failed };
   }
 }

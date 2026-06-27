@@ -21,7 +21,7 @@ import { Vfs } from "./vfs";
 import { Shell } from "../shell/shell";
 import { NodeRuntime } from "../node/node-runtime";
 import { createLocalEngine, loadBoaRuntime, type ScriptVmDriver } from "../scripting/script-engine";
-import { Catalog, type CatalogOptions } from "../catalog/catalog";
+import { Catalog, type CatalogOptions, type BundleInstallResult } from "../catalog/catalog";
 import type { InstallOptions, Manifest } from "../catalog/types";
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
@@ -215,6 +215,14 @@ export class Nano implements ShellHost, ConnectionInjector {
    */
   installApp(ref: string, opts?: InstallOptions): Promise<Manifest> {
     return this.catalog().install(this.fs, ref, opts);
+  }
+
+  /**
+   * Install a whole topic bundle (e.g. "data", "text") into this VM's filesystem
+   * — every app the catalog tags with that topic, deduped via the shared CAS.
+   */
+  installBundle(slug: string, opts?: InstallOptions): Promise<BundleInstallResult> {
+    return this.catalog().installBundle(this.fs, slug, opts);
   }
 
   // --- interactive stdin (extension beyond spec §2.3) ---
