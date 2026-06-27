@@ -19,6 +19,10 @@ export interface Manifest {
   abi: string;
   entrypoint: { argv: string[]; env: Record<string, string> };
   files: ManifestFile[];
+  /** Topic facets for bottling + marketplace browse (e.g. ["Data","Text"]). */
+  topics?: string[];
+  /** Caveat flags from the spec: "net" | "mp" | "big" | "tty". */
+  caveats?: string[];
   conformance: {
     nano_min_version: string;
     syscalls_used: number[];
