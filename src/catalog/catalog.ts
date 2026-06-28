@@ -11,7 +11,7 @@ import {
   resolveManifest,
   type InstallContext,
 } from "./installer";
-import type { BundleManifest, InstallOptions, InstallTarget, Manifest, SignedIndex } from "./types";
+import type { BundleManifest, Collection, InstallOptions, InstallTarget, Manifest, SignedIndex } from "./types";
 
 /** Result of installing a topic bundle. */
 export interface BundleInstallResult {
@@ -69,6 +69,18 @@ export class Catalog {
   /** Install `name`/`name@version` into `target` (e.g. `nano.fs`). */
   async install(target: InstallTarget, ref: string, opts?: InstallOptions): Promise<Manifest> {
     return installApp(target, ref, await this.ctx(), opts);
+  }
+
+  /** Browse facets from the index: topic-slug -> member app refs. Empty if the
+   *  index predates categories (gen ≤ 10) — fall back to {@link bundleManifest}. */
+  async categories(): Promise<Record<string, string[]>> {
+    return (await this.index()).categories ?? {};
+  }
+
+  /** Curated collections from the index: slug -> { title, description, members }.
+   *  Empty on indexes that predate collections. */
+  async collections(): Promise<Record<string, Collection>> {
+    return (await this.index()).collections ?? {};
   }
 
   /** A verified topic-bundle manifest (the set of app refs in that topic). */

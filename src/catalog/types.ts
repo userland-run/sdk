@@ -35,12 +35,26 @@ export interface Manifest {
   signature: string;
 }
 
+/** A hand-curated collection: an intentional workflow set of apps, distinct from
+ *  the auto-derived topic categories. Members are app names (version-resolved at
+ *  install). */
+export interface Collection {
+  title: string;
+  description: string;
+  members: string[]; // app names, e.g. ["node", "typescript"]
+}
+
 /** The signed catalog index (spec §7.2). */
 export interface SignedIndex {
   generation: number;
   nano_min_version: string;
   apps: Record<string, string>; // "name@version" -> manifest sha256 (a cas blob)
   bundles?: Record<string, string>; // "topic-slug" -> bundle manifest sha256
+  /** Browse facets: topic-slug -> member app refs (denormalized from `bundles`,
+   *  so clients can group apps by category without fetching each bundle). */
+  categories?: Record<string, string[]>;
+  /** Curated workflow sets: slug -> collection (distinct from topic categories). */
+  collections?: Record<string, Collection>;
   sha256: string;
   signature: string;
 }

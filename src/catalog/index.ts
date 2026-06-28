@@ -21,6 +21,7 @@ export type {
   Manifest,
   ManifestFile,
   SignedIndex,
+  Collection,
   InstallTarget,
   InstallOptions,
   InstallProgress,

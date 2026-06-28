@@ -44,6 +44,7 @@ export {
   type Manifest,
   type ManifestFile,
   type SignedIndex,
+  type Collection,
   type InstallTarget,
   type InstallOptions,
   type InstallProgress,
