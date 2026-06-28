@@ -328,11 +328,8 @@ class NanoVM {
   // ============================================================
 
   addFile(path, content, mode) {
-    const node = this._memfs.createFile(path, content);
-    // Honor an explicit mode (e.g. 0o755 for installed binaries) by setting the
-    // permission bits — same convention the tar loader uses for executables.
-    if (node && mode != null && (mode & 0o111)) node.mode = 0o100000 | (mode & 0o7777);
-    return node;
+    // createFile honors an explicit perm (e.g. 0o755 for installed binaries).
+    return this._memfs.createFile(path, content, mode);
   }
 
   /**
@@ -1273,35 +1270,55 @@ class NanoVM {
     const argv = this._readGuestStrArray(argvPtr);
     const envp = this._readGuestStrArray(envpPtr);
 
-    // Only busybox-backed executables are supported (all /bin applet symlinks).
+    // Resolve the target in the guest VFS (following symlinks).
     const target = this._memfs.resolve(execPath, true);
-    const busyboxNode = this._memfs.resolve("/bin/busybox", true);
-    if (!target || !busyboxNode || target !== busyboxNode || !this._busyboxElf) {
+    if (!target || !target.isFile) {
       this._setA0(dv, -2); // ENOENT
       dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
       return;
     }
+    if (!(target.mode & 0o111)) {
+      this._setA0(dv, -13); // EACCES — present but not executable
+      dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
+      return;
+    }
 
-    // Preserve inherited fds + cwd across the image replacement.
+    // Applet symlinks (and busybox itself) run the bundled busybox image, which
+    // dispatches on argv[0]. Anything else runs its own ELF bytes from the VFS.
+    const busyboxNode = this._memfs.resolve("/bin/busybox", true);
+    const elfBytes = (busyboxNode && target === busyboxNode && this._busyboxElf)
+      ? this._busyboxElf
+      : (target.data && target.data.length ? target.data : null);
+    if (!elfBytes || elfBytes.length < 4 ||
+        elfBytes[0] !== 0x7f || elfBytes[1] !== 0x45 ||
+        elfBytes[2] !== 0x4c || elfBytes[3] !== 0x46) {
+      this._setA0(dv, -8); // ENOEXEC — not an ELF image
+      dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
+      return;
+    }
+
+    // Preserve inherited fds + cwd + tty/termios across the image replacement.
     const v = this._vmPtr;
     const fdTable = new Uint8Array(this._memory.buffer, v + FD_TABLE_OFF, 64 * 24).slice();
     const cwd = new Uint8Array(this._memory.buffer, v + 3680, 256).slice();
+    const ttyState = new Uint8Array(this._memory.buffer, v + 3632, 48).slice();
 
     this._resetVM();
 
     new Uint8Array(this._memory.buffer).set(fdTable, v + FD_TABLE_OFF);
     new Uint8Array(this._memory.buffer).set(cwd, v + 3680);
+    new Uint8Array(this._memory.buffer).set(ttyState, v + 3632);
 
     // Load the new image and set up argv/envp.
-    new Uint8Array(this._memory.buffer).set(this._busyboxElf, this._ramPtr);
-    const loadRc = X.vm_load_elf(v, 0, this._busyboxElf.length);
+    new Uint8Array(this._memory.buffer).set(elfBytes, this._ramPtr);
+    const loadRc = X.vm_load_elf(v, 0, elfBytes.length);
     const dv2 = new DataView(this._memory.buffer);
     if (loadRc !== 0) {
       this._setA0(dv2, -8); // ENOEXEC
       dv2.setInt32(v + 528, STATUS_OK, true);
       return;
     }
-    this._setupArgv(argv.length ? argv : ["busybox"], envp);
+    this._setupArgv(argv.length ? argv : [execPath], envp);
 
     // Resume at the new entry; vm_load_elf set pc/sp, _setupArgv set the argv stack.
     dv2.setInt32(v + 528, STATUS_OK, true);
