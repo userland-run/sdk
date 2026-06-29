@@ -961,14 +961,14 @@ class NanoVM {
         }
         iter--; // FS operations don't consume execution budget
         if (++yieldCounter % 200 === 0) {
-          await new Promise(r => setTimeout(r, 0));
+          await this._adaptiveYield(X);
         }
         continue;
       }
 
       if (status === STATUS_EPOLL_BLOCKED) {
         serverMode = true;
-        await new Promise(r => setTimeout(r, 0));
+        await this._adaptiveYield(X);
         this._pollConnections();
         const dv = new DataView(this._memory.buffer);
         dv.setBigInt64(this._vmPtr + 80, BigInt(-4), true); // a0 = -EINTR
@@ -989,11 +989,45 @@ class NanoVM {
       this._pollConnections();
 
       if (stepCounter % 5 === 0) {
-        await new Promise(r => setTimeout(r, 0));
+        await this._adaptiveYield(X);
       }
     }
 
     return { exitCode: -1, stdout: this._stdout };
+  }
+
+  /**
+   * Macrotask yield via MessageChannel. Unlike `setTimeout(0)` — which is clamped
+   * to a ~4ms minimum after a few nestings (and ~1s in background tabs) —
+   * `postMessage` is not throttled, so an actively-running guest keeps full
+   * interpreter speed. Used by {@link _adaptiveYield}.
+   */
+  _fastYield() {
+    if (!this._yieldChannel) {
+      this._yieldQueue = [];
+      this._yieldChannel = new MessageChannel();
+      this._yieldChannel.port1.onmessage = () => {
+        const r = this._yieldQueue.shift();
+        if (r) r();
+      };
+    }
+    return new Promise((resolve) => {
+      this._yieldQueue.push(resolve);
+      this._yieldChannel.port2.postMessage(0);
+    });
+  }
+
+  /**
+   * Yield to the host event loop, fast or slow depending on whether the guest is
+   * making progress. While it executes (PC advancing) or a connection is pending,
+   * use the unthrottled MessageChannel yield; when idle (same PC, no pending work)
+   * fall back to `setTimeout(0)` so a quiet guest doesn't busy-spin the CPU.
+   */
+  _adaptiveYield(X) {
+    const pc = X.debug_pc ? X.debug_pc(this._vmPtr) : null;
+    const active = pc === null || pc !== this._lastYieldPc || this._pendingConnections.length > 0;
+    this._lastYieldPc = pc;
+    return active ? this._fastYield() : new Promise((r) => setTimeout(r, 0));
   }
 
   _pollConnections() {
