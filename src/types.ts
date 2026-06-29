@@ -204,3 +204,51 @@ export type ServerLaunch = { node: string[] } | { command: string };
 export interface NodeRunOptions extends ExecOptions {
   extraFiles?: Array<{ path: string; content: string | Uint8Array }>;
 }
+
+// --- terminal (Console front-end) ---
+
+/**
+ * Per-feature toggles for the composable terminal. Each feature is `true`/`false`
+ * (shorthand) or, where it carries settings, an options object. Omitting a key
+ * falls back to the terminal's {@link TerminalConfig} defaults.
+ */
+export interface TerminalFeatureConfig {
+  /** Catalog sidebar (searchable, installable app list). */
+  catalog?: boolean;
+  /** ⌘K command palette. */
+  palette?: boolean;
+  /** Files sidebar panel with CRUD on files/folders. */
+  files?: boolean;
+  /** CodeMirror file editor (opens in the Editor tab). */
+  editor?: boolean;
+  /** Server-app preview (iframe over the in-VM HTTP server). */
+  preview?: boolean | TerminalPreviewConfig;
+}
+
+/** Settings for the server-app preview feature. */
+export interface TerminalPreviewConfig {
+  /** Ports offered in the preview port selector. Default [8080]. */
+  ports?: number[];
+  /** Port selected when the Preview tab first opens. Default ports[0]. */
+  defaultPort?: number;
+}
+
+/**
+ * Configuration for {@link createTerminal} (the terminal package's factory). The
+ * terminal deep-merges this over its built-in defaults, so every field is
+ * optional; pass only what you want to override.
+ */
+export interface TerminalConfig {
+  /** nano.wasm URL. Default "/nano.wasm". */
+  wasmUrl?: string;
+  /** Guest RAM in MB. Default 256. */
+  ramMB?: number;
+  /** Command booted as the interactive session. Default "sh -i". */
+  shellCommand?: string;
+  /** Initial terminal font size in px. */
+  fontPx?: number;
+  /** Service-worker URL backing the preview bridge. Default "/nano-sw.js". */
+  serviceWorkerUrl?: string;
+  /** Feature toggles; omitted features use the terminal defaults. */
+  features?: TerminalFeatureConfig;
+}
