@@ -13,7 +13,6 @@ import type { Catalog } from "./catalog/catalog";
 import type { AppRecipe } from "./catalog/types";
 import { registerNanoServiceWorker } from "./serve/register-sw";
 import { ServeBridge } from "./serve/bridge";
-import { transitionalRecipe } from "./catalog/transitional-recipes";
 import type { ExecResult } from "./types";
 
 export interface ProvisionOptions {
@@ -127,7 +126,8 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
 
   log(`installing ${ref}…`);
   const manifest = await catalog.install(target as never, ref);
-  const recipe: AppRecipe = manifest.recipe ?? opts.recipe ?? transitionalRecipe(manifest.name) ?? {};
+  // The app's signed manifest carries its recipe; `opts.recipe` only overrides.
+  const recipe: AppRecipe = manifest.recipe ?? opts.recipe ?? {};
 
   for (const dep of [...(recipe.deps ?? []), ...(opts.extraApps ?? [])]) {
     log(`installing ${dep}…`);
