@@ -31,8 +31,11 @@
     "./service-worker": "./static/nano-sw.js"
   },
   "scripts": {
+    "check:vendor": "node scripts/check-vendor.mjs",
+    "prebuild": "node scripts/check-vendor.mjs",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
+    "pretest": "node scripts/check-vendor.mjs",
     "test": "node --test test/*.test.mjs",
     "test:emit": "node test/run-suite.mjs",
     "smoke": "node test/smoke.mjs",
