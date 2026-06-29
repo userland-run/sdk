@@ -31,6 +31,15 @@ export { NodeRuntime } from "./node/node-runtime";
 export { NanoWorkerClient, createNanoWorker } from "./worker/client";
 
 export {
+  provision,
+  type ProvisionOptions,
+  type ProvisionedApp,
+  type ServiceHandle as ProvisionServiceHandle,
+  type RunOptions as ProvisionRunOptions,
+  type ServeOptions as ProvisionServeOptions,
+} from "./provision";
+
+export {
   Catalog,
   type CatalogOptions,
   CdnClient,
@@ -49,6 +58,7 @@ export {
   type InstallContext,
   type Manifest,
   type ManifestFile,
+  type AppRecipe,
   type SignedIndex,
   type Collection,
   type InstallTarget,

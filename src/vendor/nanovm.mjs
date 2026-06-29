@@ -795,46 +795,54 @@ class NanoVM {
    * @param {number} [opts.maxSteps] - max steps for warmup phase (default 50M)
    * @returns {Promise<Object>} snapshot object for use with restoreAndRun()
    */
-  async nodeSnapshot(opts = {}) {
-    // Cache the node ELF from the guest VFS if it was catalog-installed.
-    if (!this._nodeElf) this._nodeElf = this._readElfFromVfs("/usr/bin/node");
-    if (!this._nodeElf) throw new Error("No node ELF loaded (install the node catalog app)");
-    const { maxSteps = 2_000_000_000 } = opts;
+  /**
+   * Generic app snapshot — loads an ELF, seeds an optional launcher, runs it with
+   * the given argv/env until the guest signals `/dev/__snapshot__`, captures VM
+   * state. App-specifics are PARAMETERS (driven by the app recipe) so the core
+   * stays runtime-agnostic.
+   */
+  async snapshotApp(opts = {}) {
+    const { elf, elfPath, launcher, launcherPath = "/launcher.js", argv, env = [], maxSteps = 2_000_000_000 } = opts;
+    const appElf = elf || (elfPath ? this._readElfFromVfs(elfPath) : null);
+    if (!appElf) throw new Error(`snapshotApp: no ELF (${elfPath || "pass elf or elfPath"})`);
+    if (!argv || !argv.length) throw new Error("snapshotApp: argv required");
 
-    // Seed the launcher script into MemFS
-    const launcher = [
-      "const fs = require('fs');",
-      "fs.writeFileSync('/dev/__snapshot__', 'snap');",
-      "const __s = fs.readFileSync('/dev/__run__', 'utf8');",
-      "(new Function(__s))();",
-    ].join("\n");
-    this._memfs.createFile("/launcher.js", launcher);
+    if (launcher) this._memfs.createFile(launcherPath, launcher);
 
     this._stdout = "";
     this._onStdout = null;
     this._resetProcessState();
 
-    // Reset and load Node ELF
     this._resetVM();
     const mem = new Uint8Array(this._memory.buffer);
-    mem.set(this._nodeElf, this._ramPtr);
+    mem.set(appElf, this._ramPtr);
 
     const X = this._exports;
-    const loadRc = X.vm_load_elf(this._vmPtr, 0, this._nodeElf.length);
+    const loadRc = X.vm_load_elf(this._vmPtr, 0, appElf.length);
     if (loadRc !== 0) throw new Error(`vm_load_elf failed: ${loadRc}`);
 
-    // Set up argv: node /launcher.js
-    const argv = ["node", "/launcher.js"];
-    const envVars = ["UV_THREADPOOL_SIZE=0"];
-    this._setupArgv(argv, envVars);
+    this._setupArgv(argv, env);
 
-    // Run until snapshot sentinel
     const result = await this._runLoop(maxSteps);
-    if (!result.snapshotReady) {
-      throw new Error("Node.js did not reach snapshot sentinel within budget");
-    }
-
+    if (!result.snapshotReady) throw new Error("App did not reach the snapshot sentinel within budget");
     return this.snapshot();
+  }
+
+  /** Node-specific convenience over snapshotApp; prefer a recipe-driven snapshotApp. */
+  async nodeSnapshot(opts = {}) {
+    if (!this._nodeElf) this._nodeElf = this._readElfFromVfs("/usr/bin/node");
+    return this.snapshotApp({
+      elf: this._nodeElf,
+      launcher: [
+        "const fs = require('fs');",
+        "fs.writeFileSync('/dev/__snapshot__', 'snap');",
+        "const __s = fs.readFileSync('/dev/__run__', 'utf8');",
+        "(new Function(__s))();",
+      ].join("\n"),
+      argv: ["node", "/launcher.js"],
+      env: ["UV_THREADPOOL_SIZE=0"],
+      maxSteps: opts.maxSteps ?? 2_000_000_000,
+    });
   }
 
   // Getters for runtime.ts compatibility

@@ -20,6 +20,7 @@ export { CATALOG_PUBLIC_KEY_B64 } from "./pubkey";
 export type {
   Manifest,
   ManifestFile,
+  AppRecipe,
   SignedIndex,
   Collection,
   InstallTarget,

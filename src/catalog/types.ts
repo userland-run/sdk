@@ -12,6 +12,44 @@ export interface ManifestFile {
   chunks: string[];
 }
 
+/**
+ * App-specific setup, carried as signed manifest data so a *generic* runner can
+ * provision and run the app with no per-app code (spec: app recipes). Everything
+ * runtime-specific about, e.g., node — its warmup launcher, the per-run script
+ * shape, the benign shutdown exit code, the noisy shutdown assertion to strip —
+ * lives here, not in the SDK or the consuming app.
+ */
+export interface AppRecipe {
+  /** Other catalog apps to install first (refs like "busybox@1.36.1"). */
+  deps?: string[];
+  /**
+   * Snapshot-warmup strategy. The runner boots the ELF with this launcher/argv/env
+   * until the guest signals `/dev/__snapshot__`, then reuses the snapshot for fast
+   * runs. The launcher convention: write `/dev/__snapshot__`, then read+execute the
+   * payload at `/dev/__run__`. Absent → no warm snapshot (each run is cold).
+   */
+  warmup?: {
+    /** ELF path in the guest VFS; defaults to entrypoint.path. */
+    elfPath?: string;
+    launcher?: string;
+    launcherPath?: string;
+    argv: string[];
+    env?: Record<string, string>;
+    maxSteps?: number;
+  };
+  /** How a run request becomes the script injected at `/dev/__run__`. */
+  run?: {
+    /** Template for "run this file"; `${file}` → absolute VFS path. */
+    fileScript?: string;
+    /** Template for "run this code"; `${code}` → the source. */
+    evalScript?: string;
+  };
+  /** Exit codes to treat as success (e.g. node's benign shutdown crash, 134). */
+  benignExitCodes?: number[];
+  /** Regexes; matched text through end-of-output is stripped from stdout. */
+  outputFilters?: string[];
+}
+
 /** A signed app manifest (the `.napp`, spec §6.1). */
 export interface Manifest {
   name: string;
@@ -23,6 +61,8 @@ export interface Manifest {
   topics?: string[];
   /** Caveat flags from the spec: "net" | "mp" | "big" | "tty". */
   caveats?: string[];
+  /** App-specific provisioning recipe (deps, warmup, run shape, output handling). */
+  recipe?: AppRecipe;
   conformance: {
     nano_min_version: string;
     syscalls_used: number[];

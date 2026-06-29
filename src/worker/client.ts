@@ -245,6 +245,19 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   injectConnection(port: number, httpRequest: string): Promise<Uint8Array> {
     return this.call("server", "injectConnection", [port, httpRequest]) as Promise<Uint8Array>;
   }
+  // Generic, runtime-agnostic snapshot/restore (recipe-driven; see provision()).
+  /** Configure the warmup (snapshot) params; the snapshot builds lazily. */
+  setWarmup(params: Record<string, unknown>): Promise<void> {
+    return this.call("vm", "setWarmup", [params]) as Promise<void>;
+  }
+  /** Build the warm snapshot now (off the main thread); fire-and-forget to prewarm. */
+  warmup(): Promise<void> {
+    return this.call("vm", "warmup", []) as Promise<void>;
+  }
+  /** Restore the warm snapshot and run `script` (awaits any in-flight warmup). */
+  restoreRun(script: string, opts?: NodeRunOptions): Promise<ExecResult> {
+    return this.call("vm", "restoreRun", [script, stripOnData(opts)], opts?.onData) as Promise<ExecResult>;
+  }
   writeStdin(data: Uint8Array | string): void {
     void this.call("nano", "writeStdin", [data]);
   }

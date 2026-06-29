@@ -4,7 +4,7 @@
 
 import type { NanoConfig } from "../types";
 
-export type WorkerTarget = "nano" | "fs" | "node" | "server" | "script";
+export type WorkerTarget = "nano" | "fs" | "node" | "server" | "script" | "vm";
 
 /**
  * main → worker.

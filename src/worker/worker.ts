@@ -26,6 +26,19 @@ const scope = globalThis as unknown as WorkerScope;
 
 let nano: Nano | null = null;
 let nodeRt: NodeRuntime | null = null;
+// Generic app snapshot held worker-side (it can't cross the postMessage boundary).
+// The warmup params + a shared in-flight promise serialize warmup vs. restore so
+// a fire-and-forget prewarm never races the first run on the single VM.
+let appWarmup: Record<string, unknown> | null = null;
+let appSnap: unknown = null;
+let appSnapPromise: Promise<unknown> | null = null;
+
+function ensureAppSnap(raw: { snapshotApp: (o: unknown) => Promise<unknown> }): Promise<unknown> {
+  if (appSnap) return Promise.resolve(appSnap);
+  if (!appWarmup) return Promise.reject(new Error("nano-sdk worker: no warmup configured (call vm.setWarmup)"));
+  if (!appSnapPromise) appSnapPromise = raw.snapshotApp(appWarmup).then((s) => (appSnap = s));
+  return appSnapPromise;
+}
 
 /** Per-engine state: the engine plus its current console-stream poster (set per eval). */
 interface EngineSlot {
@@ -177,6 +190,29 @@ async function dispatch(
       break;
     case "server":
       return nanoInst.injectConnection(args[0] as number, args[1] as string);
+    case "vm": {
+      // Generic, runtime-agnostic snapshot/restore (recipe-driven warmup + run).
+      const raw = (nanoInst as unknown as { raw: { snapshotApp: (o: unknown) => Promise<unknown>; restoreAndRun: (s: unknown, src: string, o: unknown) => Promise<unknown> } }).raw;
+      if (method === "setWarmup") {
+        appWarmup = args[0] as Record<string, unknown>;
+        appSnap = null;
+        appSnapPromise = null;
+        return true;
+      }
+      if (method === "warmup") {
+        await ensureAppSnap(raw); // build the snapshot (or join the in-flight build)
+        return true;
+      }
+      if (method === "restoreRun") {
+        const snap = await ensureAppSnap(raw); // waits for any in-flight warmup
+        // injectStream splices the stream poster in as `onData`; restoreAndRun
+        // wants `onStdout` (mirrors NodeRuntime.run).
+        const o = (args[1] ?? {}) as Record<string, unknown>;
+        if (o.onData && !o.onStdout) o.onStdout = o.onData;
+        return raw.restoreAndRun(snap, args[0] as string, o);
+      }
+      throw new Error(`nano-sdk worker: vm.${method} not supported`);
+    }
     default:
       throw new Error(`nano-sdk worker: unknown target ${target}`);
   }
