@@ -19,6 +19,12 @@ export { Shell, tokenize } from "./shell/shell";
 export { ScriptError } from "./scripting/script-engine";
 
 export { ServeBridge, startServer, parseHttpResponse } from "./serve/bridge";
+export {
+  registerNanoServiceWorker,
+  ensureCrossOriginIsolated,
+  type RegisterServiceWorkerOptions,
+  type ServiceWorkerStatus,
+} from "./serve/register-sw";
 
 export { NodeRuntime } from "./node/node-runtime";
 
