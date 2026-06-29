@@ -1047,20 +1047,53 @@ class NanoVM {
         // Copy response bytes from WASM memory
         const bytes = new Uint8Array(this._memory.buffer, scratchPtr, n);
         conn.responseChunks.push(new Uint8Array(bytes));
+        conn.received = (conn.received || 0) + n;
         conn.stalePollCount = 0;
+        // Once headers arrive, learn the expected length so we read the whole
+        // body (a large static asset streams in many 16 KB chunks).
+        if (conn.expectedTotal === undefined) conn.expectedTotal = this._expectedResponseLength(conn);
+        if (conn.expectedTotal != null && conn.received >= conn.expectedTotal) {
+          this._resolveConnection(X, conn, pending, i);
+        }
       } else if (n === -1) {
         // Connection closed — response is complete
         this._resolveConnection(X, conn, pending, i);
       } else if (conn.responseChunks.length > 0) {
-        // n === 0 but we already have data — server may be waiting for
-        // client-side close (HTTP Connection: close deadlock).
-        // After a few stale polls, force-close to break the deadlock.
+        // n === 0 (no bytes ready this poll). If a Content-Length told us the
+        // body isn't finished, keep waiting — the server is mid-stream. Only
+        // force-close when the length is unknown (Connection: close streaming),
+        // after enough stale polls, to break the close-deadlock.
+        if (conn.expectedTotal === undefined) conn.expectedTotal = this._expectedResponseLength(conn);
         conn.stalePollCount = (conn.stalePollCount || 0) + 1;
-        if (conn.stalePollCount >= 10) {
+        const limit = conn.expectedTotal === null ? 200 : 20000; // unknown-len vs hung-server backstop
+        if (conn.stalePollCount >= limit) {
           this._resolveConnection(X, conn, pending, i);
         }
       }
     }
+  }
+
+  /**
+   * Expected total response size (headers + body) once headers are complete:
+   *   number → Content-Length known; read until `received` reaches it.
+   *   null   → chunked / no Content-Length → rely on connection close.
+   *   undefined → headers not fully received yet → keep reading.
+   */
+  _expectedResponseLength(conn) {
+    let total = 0;
+    for (const c of conn.responseChunks) total += c.length;
+    const buf = new Uint8Array(total);
+    let off = 0;
+    for (const c of conn.responseChunks) { buf.set(c, off); off += c.length; }
+    let sep = -1;
+    for (let j = 0; j + 3 < buf.length; j++) {
+      if (buf[j] === 13 && buf[j + 1] === 10 && buf[j + 2] === 13 && buf[j + 3] === 10) { sep = j; break; }
+    }
+    if (sep === -1) return undefined; // headers not complete
+    const header = new TextDecoder().decode(buf.subarray(0, sep));
+    if (/transfer-encoding:\s*chunked/i.test(header)) return null;
+    const m = /content-length:\s*(\d+)/i.exec(header);
+    return m ? sep + 4 + parseInt(m[1], 10) : null;
   }
 
   _resolveConnection(X, conn, pending, i) {

@@ -23,7 +23,17 @@ const VENDOR = join(here, "..", "src", "vendor", "nanovm.mjs");
 
 // Methods that are pure mechanism — they must be byte-identical (modulo comments
 // + whitespace) between the container and the vendor.
-const SHARED_METHODS = ["_fastYield", "_adaptiveYield", "snapshotApp", "snapshot", "restoreAndRun"];
+const SHARED_METHODS = [
+  "_fastYield",
+  "_adaptiveYield",
+  "snapshotApp",
+  "snapshot",
+  "restoreAndRun",
+  // serve path — large responses truncate if the Content-Length completion drifts
+  "_pollConnections",
+  "_expectedResponseLength",
+  "_resolveConnection",
+];
 
 function extractMethod(src, name) {
   const re = new RegExp(`\\n {2}(?:async )?${name}\\s*\\(`);
