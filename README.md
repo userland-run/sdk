@@ -14,6 +14,10 @@ or connect the browser to HTTP apps running inside the VM.
 ESM only, fully typed, zero runtime dependencies. The NanoVM runtime is vendored, so the package is
 self-contained.
 
+> 📚 **Documentation: <https://userland.run/docs/>** — SDK overview, embedded terminal, headless
+> features, exec/fs/shell/serve/scripting/worker, the app catalog, provisioning, and the full API
+> reference. See also [Part of userland.run](#part-of-userlandrun).
+
 ## Install
 
 ```sh
@@ -134,8 +138,43 @@ The escape hatch: `nano.raw` is the underlying `NanoVM` instance. The SDK never 
   `fs.readFile`/`writeFile` is marshalled as byte arrays). In worker mode, script console output is
   streamed back combined (stdout+stderr) on the engine's `onStdout`.
 
+## Testing
+
+Two layers, both runnable from this repo:
+
+```sh
+npm test          # Node integration suite (node --test): boots the VM headless
+                  # with crossOriginIsolation:"ignore" — code/vfs/shell/scripting/catalog
+npm run smoke     # the same surface as a single standalone script (SMOKE_NODE=1 adds node)
+
+npx playwright install chromium
+npm run test:e2e       # browser suite: the real cross-origin-isolated SharedArrayBuffer path —
+                       # boot, code, vfs, shell, serve (SW bridge), scripting, worker, catalog,
+                       # plus deep Node-in-nano cases (cold + snapshot fast path, projects) and
+                       # TypeScript compiling inside the VM
+npm run test:e2e:fast  # skip the @heavy Node specs (BusyBox-only, seconds)
+npm run test:e2e:node  # only the @heavy Node + dev-tool specs
+```
+
+The Playwright suite (`tests/e2e/`) builds the SDK, stages runtime fixtures from the sibling `nano`
+repo (`scripts/sync-fixtures.mjs`), and drives a Vite-previewed harness with the COOP/COEP headers
+the VM needs. See [the docs](https://userland.run/docs/) for the full API.
+
+## Part of userland.run
+
+This is one repo in the **[userland.run](https://userland.run)** workspace:
+
+| Repo | What it is |
+| ---- | ---------- |
+| [nano](https://github.com/userland-run/nano) | The RV64GC → WASM emulator core this SDK vendors + drives |
+| **[sdk](https://github.com/userland-run/sdk)** | `@userland-run/nano-sdk` — **this repo** |
+| [terminal](https://github.com/userland-run/terminal) | `<nano-terminal>` web component, re-exported at `@userland-run/nano-sdk/terminal` |
+| [catalog](https://github.com/userland-run/catalog) | Signed app marketplace (node, typescript, eslint, …) the SDK installs from |
+| [website](https://github.com/userland-run/website) | Landing page + the hosted docs at [userland.run/docs](https://userland.run/docs/) |
+
 ## License
 
-GPL-3.0-or-later. This package vendors NanoVM (GPL-3.0). The copyright is held by the same party, so
-relicensing is a rights-holder decision — see the spec's licensing section. Replace `LICENSE.md` with
-the full GPLv3 text before publishing.
+`MPL-2.0 OR LicenseRef-UEL` — dual-licensed. Use under the **Mozilla Public License 2.0** (the
+open-source option, deliberately permissive so the SDK can be embedded broadly), or under the
+**Userland Enterprise License** (a commercial option from And The Next GmbH). The vendored NanoVM
+runtime is itself dual-licensed (AGPL-3.0 OR UEL); see [LICENSE.md](./LICENSE.md) and NOTICE.

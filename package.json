@@ -1,6 +1,6 @@
 {
   "name": "@userland-run/nano-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for NanoVM — run real Linux binaries (BusyBox, Node.js) in the browser.",
   "type": "module",
   "license": "MPL-2.0 OR LicenseRef-UEL",
@@ -44,6 +44,11 @@
     "test": "node --test test/*.test.mjs",
     "test:emit": "node test/run-suite.mjs",
     "smoke": "node test/smoke.mjs",
+    "e2e:fixtures": "node scripts/sync-fixtures.mjs",
+    "e2e:build": "vite build",
+    "test:e2e": "playwright test",
+    "test:e2e:fast": "playwright test --grep-invert @heavy",
+    "test:e2e:node": "playwright test --grep @heavy",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -60,8 +65,11 @@
     "lucide": "^1.22.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^22.10.0",
     "@webgpu/types": "^0.1.71",
     "tsup": "^8.3.5",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vite": "^5.4.0"
   }
 }

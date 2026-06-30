@@ -3,3 +3,11 @@ dist/
 *.tsbuildinfo
 *.log
 .DS_Store
+
+# Playwright e2e: staged fixtures + harness build + run artifacts (not checked in)
+tests/e2e/public/
+tests/e2e/dist/
+test-results/
+playwright-report/
+blob-report/
+.playwright/

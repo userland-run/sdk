@@ -1,0 +1,25 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: MPL-2.0 OR LicenseRef-UEL
+  Copyright (C) 2026 And The Next GmbH - https://userland.run
+
+  Playwright e2e harness. Loads the built SDK and exposes boot helpers on
+  `window` (see harness.ts); the specs drive everything via page.evaluate().
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>nano-sdk e2e harness</title>
+  </head>
+  <body>
+    <h1>nano-sdk e2e harness</h1>
+    <p>
+      Cross-origin isolated:
+      <span id="coi">?</span> · SharedArrayBuffer:
+      <span id="sab">?</span> · harness:
+      <span id="status">loading…</span>
+    </p>
+    <pre id="log" aria-label="harness log"></pre>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>
