@@ -57,6 +57,7 @@ const SYS_GETDENTS64 = 61;
 const SYS_LSEEK      = 62;
 const SYS_READ       = 63;
 const SYS_WRITE      = 64;
+const SYS_PPOLL      = 73;
 const SYS_PREAD64    = 67;
 const SYS_PREADV     = 69;
 const SYS_READLINKAT = 78;
@@ -93,7 +94,8 @@ class NanoVM {
     this._scratchPtr = 0; // WASM linear memory scratch buffer for virtual server
     this._snapshotRequested = false; // set by sentinel detection in _processFsRequest
     this._runId = 0; // incremented on each run; checked in _runLoop for cancellation
-    this._lazyFiles = new Map();      // path -> { meta, done } for catalog lazy demand-fetch
+    this._boaWasm = null;             // boa.wasm source (URL/bytes) for the scripting layer
+    this._boa = null;                 // lazily-loaded BoaRuntime (see scripting())
   }
 
   /**
@@ -103,6 +105,7 @@ class NanoVM {
    * @param {string} opts.wasm - URL to the nano.wasm file
    * @param {string} [opts.busyboxUrl] - URL to busybox ELF (if not bundled)
    * @param {string} [opts.nodeUrl] - URL to node ELF (if not bundled)
+   * @param {string|ArrayBuffer|Uint8Array} [opts.boaWasm] - boa.wasm for the scripting layer (lazy)
    */
   static async create(opts = {}) {
     const vm = new NanoVM();
@@ -111,8 +114,9 @@ class NanoVM {
   }
 
   async _init(opts) {
-    const { ramMB = 512, wasm, busyboxUrl, nodeUrl } = opts;
+    const { ramMB = 512, wasm, busyboxUrl, nodeUrl, boaWasm } = opts;
     this._ramMB = ramMB;
+    this._boaWasm = boaWasm || null;
 
     // Load WASM binary (accepts URL string, ArrayBuffer, or Uint8Array)
     let wasmBytes;
@@ -197,6 +201,7 @@ class NanoVM {
 
     // Virtual server — bridges SW HTTP requests into VM sockets
     this._pendingConnections = []; // { connId, resolve, responseChunks }
+    this._lazyFiles = new Map();   // path -> { meta, done } — catalog lazy demand-fetch (SDK-only)
     this._virtualServer = new VirtualServer(this);
 
     // Pre-warm WASM JIT: run a trivial busybox command so the browser's
@@ -328,9 +333,10 @@ class NanoVM {
   // ============================================================
 
   addFile(path, content, mode) {
-    // createFile honors an explicit perm (e.g. 0o755 for installed binaries).
-    return this._memfs.createFile(path, content, mode);
+    this._memfs.createFile(path, content, mode);
   }
+
+  // --- catalog lazy demand-fetch (SDK-only; not in nano/container) -----------
 
   /**
    * Register a file for catalog lazy demand-fetch: instead of materializing the
@@ -401,6 +407,156 @@ class NanoVM {
     await this._memfs.loadTarGz(buffer);
   }
 
+  /**
+   * Create a directory (and any missing parents), like `mkdir -p`. Synchronous,
+   * direct MemFS — takes no VM step, so it is safe while an interactive shell
+   * owns the run loop. Idempotent on an existing directory; throws if the path
+   * already exists as a non-directory.
+   */
+  makeDir(path) {
+    const existing = this._memfs.resolve(path, false);
+    if (existing) {
+      if (existing.isDir) return; // idempotent
+      throw new Error(`makeDir: path exists and is not a directory: ${path}`);
+    }
+    this._memfs.createDir(path);
+  }
+
+  /**
+   * Recursively remove a file, symlink, or directory (like `rm -rf`).
+   * Synchronous, direct MemFS. Symlinks are removed as links — never followed —
+   * so a symlink cycle cannot hang the walk. No-op if the path does not exist.
+   */
+  removePath(path) {
+    const node = this._memfs.resolve(path, /*followSymlinks=*/ false);
+    if (!node) return;
+    if (node.isDir) {
+      const sep = path.endsWith("/") ? "" : "/";
+      for (const childName of [...node.children.keys()]) {
+        this.removePath(path + sep + childName);
+      }
+      const rc = this._memfs.unlink(path, 0x200); // AT_REMOVEDIR
+      if (rc < 0) throw new Error(`removePath: rmdir failed (errno ${rc}): ${path}`);
+    } else {
+      const rc = this._memfs.unlink(path, 0); // file or symlink (not followed)
+      if (rc < 0) throw new Error(`removePath: unlink failed (errno ${rc}): ${path}`);
+    }
+  }
+
+  /**
+   * Rename/move a path. Synchronous, direct MemFS. Overwrites an existing
+   * destination entry. Refuses to move a directory into its own descendant
+   * (which would orphan the subtree into a cycle).
+   */
+  renamePath(from, to) {
+    const norm = (p) => "/" + p.split("/").filter(Boolean).join("/");
+    const f = norm(from);
+    const t = norm(to);
+    if (t === f || t.startsWith(f + "/")) {
+      throw new Error(`renamePath: cannot move ${from} into its own descendant: ${to}`);
+    }
+    const rc = this._memfs.rename(from, to);
+    if (rc < 0) throw new Error(`renamePath: rename failed (errno ${rc}): ${from} -> ${to}`);
+  }
+
+  /** Working directory of the process currently in the run loop (e.g. "/root"). */
+  cwd() {
+    return this._readCwd();
+  }
+
+  // ============================================================
+  // Public API — Scripting (host-side Boa engine)
+  // ============================================================
+
+  /**
+   * Create a sandboxed Boa scripting engine that can drive this VM. Loads
+   * boa.wasm lazily on first use (so consumers who never script pay nothing).
+   *
+   * @param {Object} [opts]
+   * @param {string|ArrayBuffer|Uint8Array} [opts.wasm] - boa.wasm source (defaults to NanoVM.create({boaWasm}))
+   * @param {Object} [opts.expose] - capabilities: { fs:"none"|"readonly"|"readwrite", run, node }
+   * @param {string} [opts.globalName] - bridge global name (default "nano")
+   * @param {Object} [opts.env] - read-only key/value bag injected as `<global>.env`
+   * @param {Object} [opts.limits] - { loopIterations, recursion }
+   * @param {number} [opts.timeoutMs] - host watchdog
+   * @returns {Promise<import("./boa.mjs").BoaEngine>}
+   */
+  async scripting(opts = {}) {
+    const wasm = opts.wasm || this._boaWasm;
+    if (!wasm) {
+      throw new Error("NanoVM.scripting: provide boa.wasm via opts.wasm or NanoVM.create({ boaWasm })");
+    }
+    if (!this._boa) {
+      const { BoaRuntime } = await import("./boa.mjs");
+      this._boa = await BoaRuntime.load(wasm);
+    }
+    return this._boa.createEngine({ host: this._scriptingHost(), ...opts });
+  }
+
+  /** One-shot: create an engine, evaluate `source`, dispose, return the value. */
+  async script(source, opts = {}) {
+    const engine = await this.scripting(opts);
+    try {
+      return await engine.eval(source);
+    } finally {
+      engine.dispose();
+    }
+  }
+
+  /**
+   * Wire a catalog so apps can be installed into this VM — by the host, by the
+   * scripting layer (`nano.catalog.install(...)`), and via {@link installApp}.
+   * `catalog` is duck-typed (an SDK `Catalog`): it must expose
+   * `install(target, ref, opts)` and optionally `installBundle(target, slug, opts)`.
+   * The InstallTarget is this VM's VFS (addFile). Returns `this` for chaining.
+   */
+  useCatalog(catalog) {
+    const target = { writeFile: (p, bytes, mode) => this.addFile(p, bytes, mode) };
+    this._catalogInstaller = {
+      install: (ref, opts) => catalog.install(target, ref, opts),
+      installBundle: (slug, opts) =>
+        catalog.installBundle ? catalog.installBundle(target, slug, opts)
+          : Promise.reject(new Error("catalog has no installBundle")),
+    };
+    return this;
+  }
+
+  /** Install a catalog app into this VM's VFS (requires {@link useCatalog}). */
+  installApp(ref, opts) {
+    if (!this._catalogInstaller) return Promise.reject(new Error("no catalog wired — call vm.useCatalog(catalog)"));
+    return this._catalogInstaller.install(ref, opts);
+  }
+
+  /** Host driver mapping the Boa bridge onto this VM's MemFS + run/node + catalog. */
+  _scriptingHost() {
+    const vm = this;
+    const needCatalog = () => {
+      if (!vm._catalogInstaller) throw new Error("catalog not wired — call vm.useCatalog(catalog) before scripting");
+      return vm._catalogInstaller;
+    };
+    return {
+      fs: {
+        readText: (p) => vm.readFileString(p),
+        readFile: (p) => {
+          const node = vm._memfs.resolve(p);
+          return node && node.isFile ? node.data || new Uint8Array(0) : null;
+        },
+        list: (p) => vm.listDir(p),
+        exists: (p) => !!vm._memfs.resolve(p),
+        writeFile: (p, bytes) => vm.addFile(p, bytes),
+      },
+      run: (command) => vm.run(command),
+      node: (args) => vm.node(...(Array.isArray(args) ? args : [args])),
+      log: (...a) => console.log(...a),
+      // Catalog: a script can load apps on demand (async; the Boa bridge supports
+      // host_call_async). e.g. `await nano.catalog.install("ripgrep"); nano.run("rg --version")`.
+      catalog: {
+        install: (ref, opts) => needCatalog().install(ref, opts),
+        installBundle: (slug, opts) => needCatalog().installBundle(slug, opts),
+      },
+    };
+  }
+
   // ============================================================
   // Public API — Execution
   // ============================================================
@@ -414,7 +570,8 @@ class NanoVM {
    * @returns {Promise<{exitCode: number, stdout: string}>}
    */
   async run(command, opts = {}) {
-    // Embedded busybox, else a catalog-installed /bin/busybox from the guest VFS.
+    // Prefer the embedded busybox; otherwise exec a catalog-installed
+    // /bin/busybox from the guest VFS (the migration distributes it via the catalog).
     const elf = this._busyboxElf || this._readElfFromVfs("/bin/busybox");
     if (!elf) throw new Error("No busybox ELF loaded (embed it or install the busybox catalog app)");
     const argv = command.trim().split(/\s+/);
@@ -423,7 +580,7 @@ class NanoVM {
 
   /** Read an installed ELF from the guest VFS (follows symlinks), or null. */
   _readElfFromVfs(path) {
-    const node = this._memfs.resolve(path, true);
+    const node = this._memfs.resolve(path);
     return node && node.isFile && node.data && node.data.length ? node.data : null;
   }
 
@@ -433,6 +590,7 @@ class NanoVM {
    * @returns {Promise<{exitCode: number, stdout: string}>}
    */
   async node(...argsAndOpts) {
+    // Embedded node, else a catalog-installed /usr/bin/node from the guest VFS.
     const nodeElf = this._nodeElf || this._readElfFromVfs("/usr/bin/node");
     if (!nodeElf) throw new Error("No node ELF loaded (install the node catalog app)");
     let opts = {};
@@ -466,8 +624,19 @@ class NanoVM {
   writeStdin(bytes) {
     if (typeof bytes === "string") bytes = new TextEncoder().encode(bytes);
     if (!bytes || bytes.length === 0) return;
-    // Store a private copy so callers can reuse their buffer.
-    this._stdinQueue.push(bytes.slice());
+    const X = this._exports;
+    if (X && X.vm_stdin_push) {
+      // Push into the in-VM tty ring (applies line discipline / echo).
+      if (!this._stdinScratch || this._stdinScratchCap < bytes.length) {
+        this._stdinScratchCap = Math.max(bytes.length, 1024);
+        this._stdinScratch = X.malloc(this._stdinScratchCap);
+      }
+      new Uint8Array(this._memory.buffer).set(bytes, this._stdinScratch);
+      X.vm_stdin_push(this._vmPtr, this._stdinScratch, bytes.length);
+    } else {
+      // Legacy fallback: JS queue (older wasm without the in-VM tty ring).
+      this._stdinQueue.push(bytes.slice());
+    }
     this._stdinEof = false; // new input cancels a prior EOF
   }
 
@@ -480,11 +649,15 @@ class NanoVM {
    */
   setInteractiveStdin(on = true) {
     this._stdinInteractive = !!on;
+    const X = this._exports;
+    if (X && X.vm_stdin_set_interactive) X.vm_stdin_set_interactive(this._vmPtr, on ? 1 : 0);
   }
 
   /** Signal end-of-input on stdin (e.g. Ctrl-D). The next empty read returns EOF. */
   closeStdin() {
     this._stdinEof = true;
+    const X = this._exports;
+    if (X && X.vm_stdin_eof) X.vm_stdin_eof(this._vmPtr);
   }
 
   /** Total bytes currently queued on stdin. */
@@ -561,22 +734,43 @@ class NanoVM {
     this._termRows = rows;
     if (X.term_reset) X.term_reset(cols, rows);
     if (X.vm_tty_set_size) X.vm_tty_set_size(this._vmPtr, cols, rows);
+    if (X.vm_signal) X.vm_signal(this._vmPtr, 28); // SIGWINCH
   }
 
   /**
-   * Snapshot the current grid for rendering. Returns dimensions, cursor, and a
-   * copy of the cell bytes (row-major, 8 bytes/cell: u32 ch, u8 fg, u8 bg,
-   * u8 flags, u8 pad), or null if the build lacks terminal exports.
-   * @returns {{cols:number, rows:number, cursorRow:number, cursorCol:number, cells:Uint8Array}|null}
+   * Snapshot the grid for rendering. Returns dimensions, cursor, a copy of the
+   * cell bytes (row-major, 8 bytes/cell: u32 ch, u8 fg, u8 bg, u8 flags, u8 pad),
+   * and the scroll position, or null if the build lacks terminal exports.
+   *
+   * `scrollOffset` is the number of scrollback lines scrolled up from the live
+   * bottom (0 = live). It is clamped to `scrollMax`; the cursor is hidden
+   * (-1/-1) whenever the viewport is scrolled off the live region.
+   * @param {number} [scrollOffset=0]
+   * @returns {{cols:number, rows:number, cursorRow:number, cursorCol:number,
+   *   cells:Uint8Array, scrollOffset:number, scrollMax:number}|null}
    */
-  termSnapshot() {
+  termSnapshot(scrollOffset = 0) {
     const X = this._exports;
     if (!this._termEnabled || !X.term_cells_ptr) return null;
     const cols = X.term_cols();
     const rows = X.term_rows();
-    const ptr = X.term_cells_ptr();
+    let ptr, scrollMax = 0, off = 0;
+    if (X.term_compose && X.term_view_ptr && X.term_scroll_max) {
+      scrollMax = X.term_scroll_max();
+      off = Math.max(0, Math.min(scrollOffset | 0, scrollMax));
+      X.term_compose(off);
+      ptr = X.term_view_ptr();
+    } else {
+      ptr = X.term_cells_ptr(); // pre-scrollback build: live screen only
+    }
     const cells = new Uint8Array(this._memory.buffer, ptr, cols * rows * 8).slice();
-    return { cols, rows, cursorRow: X.term_cursor_row(), cursorCol: X.term_cursor_col(), cells };
+    const live = off === 0;
+    return {
+      cols, rows,
+      cursorRow: live ? X.term_cursor_row() : -1,
+      cursorCol: live ? X.term_cursor_col() : -1,
+      cells, scrollOffset: off, scrollMax,
+    };
   }
 
   /**
@@ -796,10 +990,21 @@ class NanoVM {
    * @returns {Promise<Object>} snapshot object for use with restoreAndRun()
    */
   /**
-   * Generic app snapshot — loads an ELF, seeds an optional launcher, runs it with
-   * the given argv/env until the guest signals `/dev/__snapshot__`, captures VM
-   * state. App-specifics are PARAMETERS (driven by the app recipe) so the core
-   * stays runtime-agnostic.
+   * Generic app snapshot. Loads an ELF, seeds an optional launcher script, runs
+   * it with the given argv/env until the guest signals the `/dev/__snapshot__`
+   * sentinel, and captures the VM state. App-specifics (which ELF, the launcher,
+   * argv, env) are PARAMETERS — driven by the app's recipe — so the core stays
+   * runtime-agnostic. The launcher convention: write `/dev/__snapshot__`, then
+   * read + execute the per-run payload at `/dev/__run__` (see restoreAndRun).
+   *
+   * @param {object} opts
+   * @param {Uint8Array} [opts.elf] - ELF bytes (or read from elfPath).
+   * @param {string}     [opts.elfPath] - VFS path to read the ELF from.
+   * @param {string}     [opts.launcher] - launcher source seeded at launcherPath.
+   * @param {string}     [opts.launcherPath="/launcher.js"]
+   * @param {string[]}   opts.argv - process argv (e.g. ["node","/launcher.js"]).
+   * @param {string[]}   [opts.env=[]] - environment (["K=V", ...]).
+   * @param {number}     [opts.maxSteps=2e9]
    */
   async snapshotApp(opts = {}) {
     const { elf, elfPath, launcher, launcherPath = "/launcher.js", argv, env = [], maxSteps = 2_000_000_000 } = opts;
@@ -828,11 +1033,16 @@ class NanoVM {
     return this.snapshot();
   }
 
-  /** Node-specific convenience over snapshotApp; prefer a recipe-driven snapshotApp. */
+  /**
+   * Node-specific convenience over {@link snapshotApp}. Prefer driving snapshotApp
+   * from an app recipe (the node specifics below live in the catalog node recipe);
+   * kept for backward compatibility.
+   */
   async nodeSnapshot(opts = {}) {
-    if (!this._nodeElf) this._nodeElf = this._readElfFromVfs("/usr/bin/node");
+    const nodeElf = this._nodeElf || this._readElfFromVfs("/usr/bin/node");
     return this.snapshotApp({
-      elf: this._nodeElf,
+      elf: nodeElf,
+      launcherPath: "/launcher.js",
       launcher: [
         "const fs = require('fs');",
         "fs.writeFileSync('/dev/__snapshot__', 'snap');",
@@ -849,6 +1059,31 @@ class NanoVM {
   get exports() { return this._exports; }
   get memory() { return this._memory; }
   get virtualServer() { return this._virtualServer; }
+
+  // ============================================================
+  // Public API — Introspection (terminal footer stats)
+  // ============================================================
+
+  /** Total guest instructions retired so far (for an insns/sec readout). */
+  instructionCount() {
+    const X = this._exports;
+    if (!X || !X.debug_block_insns) return 0;
+    return Number(X.debug_block_insns(this._vmPtr)) + Number(X.debug_baseline_insns(this._vmPtr));
+  }
+
+  /**
+   * Whether a guest server is listening this run. Sticky once detected (a server
+   * either via EPOLL accept-block or a "listening …" banner); cleared on the next
+   * run/reset. Good enough for a footer "port open" hint.
+   */
+  get serving() {
+    return !!this._serverMode;
+  }
+
+  /** The listening port (best-effort, from the server banner) while serving, else null. */
+  get servingPort() {
+    return this._serverMode ? this._servingPort ?? null : null;
+  }
 
   // ============================================================
   // Internal — Execution loop
@@ -910,6 +1145,9 @@ class NanoVM {
     let stepCounter = 0;
     let serverMode = false;
     this._snapshotRequested = false;
+    this._lastYieldPc = null; // adaptive-yield progress tracker (see _adaptiveYield)
+    this._serverMode = false; // set once a guest server is listening (see get serving)
+    this._servingPort = null;
     const myRunId = ++this._runId;
 
     for (let iter = 0; iter < maxIter; iter++) {
@@ -942,17 +1180,17 @@ class NanoVM {
       }
 
       if (status === STATUS_FS_PENDING) {
-        // Catalog lazy demand-fetch: if this request first touches a registered
-        // lazy file, fetch+verify+materialize it before servicing. No-op (no
-        // await work) unless lazy files are registered.
+        // Catalog lazy demand-fetch (SDK-only): materialize a registered lazy file
+        // before servicing the request that first touches it. No-op when empty.
         if (this._lazyFiles.size !== 0) await this._maybeMaterializeLazy();
         this._processFsRequest();
         // Snapshot sentinel was hit — return control to caller
         if (this._snapshotRequested) {
           return { exitCode: 0, stdout: this._stdout, snapshotReady: true };
         }
-        // Network sentinel (/dev/__net__): do the host fetch (async run loop);
-        // a read that triggered it is served with the response.
+        // Network sentinel: the guest wrote a request to /dev/__net__ and then
+        // either closed it or read from it. Do the host fetch here (the run loop
+        // is async); a read that triggered it is then served with the response.
         if (this._asyncNet) {
           const an = this._asyncNet;
           this._asyncNet = null;
@@ -961,13 +1199,14 @@ class NanoVM {
         }
         iter--; // FS operations don't consume execution budget
         if (++yieldCounter % 200 === 0) {
-          await this._adaptiveYield(X);
+          await new Promise(r => setTimeout(r, 0));
         }
         continue;
       }
 
       if (status === STATUS_EPOLL_BLOCKED) {
         serverMode = true;
+        this._serverMode = true; // a guest server is listening (footer indicator)
         await this._adaptiveYield(X);
         this._pollConnections();
         const dv = new DataView(this._memory.buffer);
@@ -983,6 +1222,14 @@ class NanoVM {
 
       if (!serverMode && /listening/i.test(this._stdout)) {
         serverMode = true;
+        this._serverMode = true;
+        // Best-effort: pull the port from the server's banner ("listening on
+        // 8080", "running at http://localhost:3000", ":5173", …).
+        const tail = this._stdout.slice(-240);
+        const m =
+          /(?:listening|running|started)[^\d]{0,14}(\d{2,5})/i.exec(tail) ||
+          /:(\d{2,5})\b/.exec(tail);
+        if (m) this._servingPort = parseInt(m[1], 10);
       }
       if (serverMode) iter--;
 
@@ -997,10 +1244,10 @@ class NanoVM {
   }
 
   /**
-   * Macrotask yield via MessageChannel. Unlike `setTimeout(0)` — which is clamped
-   * to a ~4ms minimum after a few nestings (and ~1s in background tabs) —
-   * `postMessage` is not throttled, so an actively-running guest keeps full
-   * interpreter speed. Used by {@link _adaptiveYield}.
+   * Macrotask yield via MessageChannel. Unlike `setTimeout(0)` — which Chrome
+   * clamps to ~1s in background/hidden tabs — `postMessage` is NOT throttled, so
+   * an actively-running guest (cold-starting Node, serving HTTP) keeps full
+   * interpreter speed even when the tab isn't focused. Used by {@link _adaptiveYield}.
    */
   _fastYield() {
     if (!this._yieldChannel) {
@@ -1020,8 +1267,9 @@ class NanoVM {
   /**
    * Yield to the host event loop, fast or slow depending on whether the guest is
    * making progress. While it executes (PC advancing) or a connection is pending,
-   * use the unthrottled MessageChannel yield; when idle (same PC, no pending work)
-   * fall back to `setTimeout(0)` so a quiet guest doesn't busy-spin the CPU.
+   * use the unthrottled MessageChannel yield; when idle (e.g. an interactive
+   * shell parked on an empty stdin read — same PC, no pending work), fall back to
+   * `setTimeout(0)` so a quiet terminal doesn't busy-spin the CPU.
    */
   _adaptiveYield(X) {
     const pc = X.debug_pc ? X.debug_pc(this._vmPtr) : null;
@@ -1074,10 +1322,11 @@ class NanoVM {
   }
 
   /**
-   * Expected total response size (headers + body) once headers are complete:
-   *   number → Content-Length known; read until `received` reaches it.
-   *   null   → chunked / no Content-Length → rely on connection close.
-   *   undefined → headers not fully received yet → keep reading.
+   * Inspect a connection's accumulated bytes and return the expected total
+   * response size (header + body) once the headers are complete:
+   *   - a number   → Content-Length known; read until `received` reaches it
+   *   - `null`     → chunked or no Content-Length → rely on connection close
+   *   - `undefined`→ headers not fully received yet → keep reading
    */
   _expectedResponseLength(conn) {
     let total = 0;
@@ -1316,7 +1565,11 @@ class NanoVM {
     const view = new Uint8Array(this._memory.buffer, this._ramPtr + (gptr >>> 0));
     let e = 0;
     while (e < view.length && e < 8192 && view[e] !== 0) e++;
-    return new TextDecoder().decode(view.subarray(0, e));
+    // `.slice()` (not `.subarray()`) — copies into a non-shared ArrayBuffer.
+    // The browser's TextDecoder rejects views backed by the SharedArrayBuffer
+    // that `_memory.buffer` is (WASM memory is shared:true). Node's is lenient,
+    // so this only bites in the browser (e.g. reading execve argv).
+    return new TextDecoder().decode(view.slice(0, e));
   }
 
   /** Read a NULL-terminated array of guest string pointers (argv/envp). */
@@ -1335,10 +1588,13 @@ class NanoVM {
   }
 
   /**
-   * execve: replace the current process image with busybox (resolved from a /bin
-   * applet symlink), preserving inherited fds and cwd. argv/envp are read from the
-   * OLD image before the reset overwrites RAM. Resumes at the new ELF entry; on
-   * failure writes a negative errno to a0 (execve "returns" only on error).
+   * execve: replace the current process image, preserving inherited fds and cwd.
+   * Two cases are supported: the target resolves to /bin/busybox (an applet
+   * symlink or busybox itself) → run the bundled busybox image, dispatched by
+   * argv[0]; OR it's any other executable ELF in the VFS (e.g. a catalog-installed
+   * /usr/bin/<tool>) → load THAT image. argv/envp are read from the OLD image
+   * before the reset overwrites RAM. Resumes at the new ELF entry; on failure
+   * writes a negative errno to a0 (execve "returns" only on error).
    */
   _doExecve(dv, execPath, argvPtr, envpPtr) {
     const X = this._exports;
@@ -1373,6 +1629,12 @@ class NanoVM {
     }
 
     // Preserve inherited fds + cwd + tty/termios across the image replacement.
+    // Like a real execve, the controlling tty's state (isatty + winsize + the
+    // termios flags, incl. OPOST/ONLCR) belongs to the terminal, not the process
+    // image, so it must survive the reset — otherwise the new program writes with
+    // no output post-processing and every '\n' line-feeds without a carriage
+    // return (the classic "staircase"). Block [3632, 3680) = tty_enabled, ws_row,
+    // ws_col, c_iflag/oflag/cflag/lflag, c_cc[19], c_line (see src/types.rs).
     const v = this._vmPtr;
     const fdTable = new Uint8Array(this._memory.buffer, v + FD_TABLE_OFF, 64 * 24).slice();
     const cwd = new Uint8Array(this._memory.buffer, v + 3680, 256).slice();
@@ -1400,11 +1662,19 @@ class NanoVM {
   }
 
   // ---- Network bridge (Tier 1): host-brokered fetch via /dev/__net__ ----
+
+  /**
+   * Configure the network bridge. `corsProxyUrl` (Tier 1.5) is a CORS-proxy
+   * Worker the bridge retries through when a direct fetch is CORS-blocked;
+   * `disabled` turns the /dev/__net__ device off (open returns EACCES).
+   */
   setNetwork({ corsProxyUrl = null, disabled = false } = {}) {
     this._corsProxyUrl = corsProxyUrl;
     this._netDisabled = !!disabled;
   }
 
+  // Concatenate the accumulated request bytes, do the host fetch, buffer the
+  // HTTP-like response for the guest's reads.
   async _netFetch() {
     const parts = this._netReq || []; this._netReq = [];
     let total = 0; for (const p of parts) total += p.length;
@@ -1415,6 +1685,7 @@ class NanoVM {
   }
 
   async _doNetFetch(reqBytes) {
+    // Parse "METHOD URL\nHeader: v\n...\n\nbody".
     const text = new TextDecoder().decode(reqBytes);
     const sep = text.indexOf("\n\n");
     const head = sep >= 0 ? text.slice(0, sep) : text;
@@ -1430,8 +1701,10 @@ class NanoVM {
     if (method !== "GET" && method !== "HEAD" && body) opts.body = body;
     try {
       let resp;
-      try { resp = await fetch(url, opts); }
-      catch (e) {
+      try {
+        resp = await fetch(url, opts);
+      } catch (e) {
+        // Direct fetch blocked (CORS/network) → retry via the Tier-1.5 proxy if set.
         if (this._corsProxyUrl) {
           const u = this._corsProxyUrl + (this._corsProxyUrl.includes("?") ? "&" : "?") + "apiurl=" + encodeURIComponent(url);
           resp = await fetch(u, opts);
@@ -1445,6 +1718,8 @@ class NanoVM {
     }
   }
 
+  // Copy the next chunk of the buffered response into the guest read buffer and
+  // complete the read (a0 = bytes copied; 0 = EOF). Resets status to OK.
   _serveNetRead(bufPtr, bufLen) {
     const dv = new DataView(this._memory.buffer);
     const resp = this._netResp || new Uint8Array(0);
@@ -1458,6 +1733,7 @@ class NanoVM {
     dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
   }
 
+  // Frame a host response as HTTP/1.1 (status line + headers + body) for the guest.
   _httpResp(status, statusText, headers, body) {
     const bodyBytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
     let head = `HTTP/1.1 ${status} ${statusText}\r\n`;
@@ -1483,6 +1759,18 @@ class NanoVM {
     const arg3      = Number(dv.getBigInt64(reqPtr + 24, true));
     const bufPtr    = dv.getUint32(reqPtr + 32, true);
     const bufLen    = dv.getUint32(reqPtr + 36, true);
+
+    // In-VM stdin park: a stdin read()/ppoll() blocked waiting for input.
+    // Re-attempt against the tty ring; if still waiting, leave FS_PENDING so the
+    // run loop re-polls (and yields to the event loop so keystrokes can arrive).
+    if (X.vm_io_retry && (syscallNr === SYS_READ || syscallNr === SYS_PPOLL)) {
+      const isStdin = syscallNr === SYS_PPOLL ||
+        (gfd >= 0 && gfd < MAX_FDS && this._fdRead(dv, gfd).fd_type === FD_TYPE_STDIN);
+      if (isStdin) {
+        X.vm_io_retry(this._vmPtr); // completes (sets a0 + status) or leaves pending
+        return;
+      }
+    }
 
     // Read null-terminated path (offset +40, max 256 bytes)
     const pathBytes = new Uint8Array(this._memory.buffer, reqPtr + 40, 256);
@@ -1543,9 +1831,12 @@ class NanoVM {
       dv.setInt32(this._vmPtr + 528, STATUS_OK, true);
       return;
     }
-    // Network sentinel: openat /dev/__net__ → host_fd -98 (host-brokered fetch).
+
+    // Network sentinel: openat /dev/__net__ assigns host_fd -98. The guest writes
+    // a request ("METHOD URL\nHeader: v\n\nbody") then reads back an HTTP-like
+    // response; the actual host fetch runs in the (async) run loop after close.
     if (syscallNr === SYS_OPENAT && path === "/dev/__net__") {
-      if (this._netDisabled) { this._setA0(dv, -13); dv.setInt32(this._vmPtr + 528, STATUS_OK, true); return; }
+      if (this._netDisabled) { this._setA0(dv, -13); dv.setInt32(this._vmPtr + 528, STATUS_OK, true); return; } // EACCES
       const newGfd = this._fdAlloc(dv);
       if (newGfd >= 0) this._fdWrite(dv, newGfd, FD_TYPE_FILE, -98, 0, 0);
       this._setA0(dv, newGfd >= 0 ? newGfd : -28);
@@ -1584,8 +1875,8 @@ class NanoVM {
           return;
         }
       }
-      // Network sentinel fd (host_fd === -98): accumulate request on write, serve
-      // the buffered response on read; the fetch is awaited in the run loop.
+      // Network sentinel fd (host_fd === -98): accumulate the request on write,
+      // serve the buffered response on read; close after a write triggers fetch.
       if (fe.host_fd === -98) {
         if (syscallNr === SYS_WRITE) {
           const count = bufLen || arg1;
@@ -1596,9 +1887,11 @@ class NanoVM {
           return;
         }
         if (syscallNr === SYS_READ) {
+          // First read after a written request (single-fd RDWR shim): fetch first,
+          // then serve — the run loop awaits and calls _serveNetRead.
           if (this._netReq && this._netReq.length && !this._netResp) {
             this._asyncNet = { read: true, bufPtr, bufLen };
-            return; // run loop fetches then serves this read
+            return; // leave FS_PENDING; the run loop completes this read
           }
           this._serveNetRead(bufPtr, bufLen);
           return;
@@ -1614,6 +1907,8 @@ class NanoVM {
         }
         if (syscallNr === SYS_CLOSE) {
           this._fdClear(dv, gfd);
+          // A request written then closed without reading (printf>; cat pattern):
+          // fetch now so the next open+read serves it.
           if (this._netReq && this._netReq.length && !this._netResp) this._asyncNet = { read: false };
           this._setA0(dv, 0);
           dv.setInt32(this._vmPtr + 528, STATUS_OK, true);

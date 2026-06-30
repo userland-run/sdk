@@ -68,11 +68,16 @@ for (const name of SHARED_METHODS) {
   else if (normalize(a) !== normalize(b)) problems.push(`${name}() DIFFERS between container and vendor — reconcile it`);
 }
 
-// The yield invariant: every run-loop yield must go through the (unthrottled)
-// adaptive yield. A bare setTimeout(0) in _runLoop is the perf regression.
-const runLoop = extractMethod(vendor, "_runLoop") ?? "";
-if (!/_adaptiveYield\s*\(/.test(runLoop)) problems.push("vendor _runLoop() does not use _adaptiveYield — yields will be throttled");
-if (/setTimeout\s*\(\s*r\s*,\s*0\s*\)/.test(runLoop)) problems.push("vendor _runLoop() still yields via setTimeout(0) — use _adaptiveYield (perf!)");
+// The yield invariant: the hot run-loop yield must go through the (unthrottled)
+// adaptive yield. The container keeps ONE setTimeout(0) for the infrequent
+// FS-pending yield, so flag only EXTRA setTimeouts vs the container (the perf
+// regression was the hot-path yield falling back to setTimeout).
+const cRunLoop = extractMethod(container, "_runLoop") ?? "";
+const vRunLoop = extractMethod(vendor, "_runLoop") ?? "";
+const countST = (s) => (s.match(/setTimeout\s*\(/g) ?? []).length;
+if (!/_adaptiveYield\s*\(/.test(vRunLoop)) problems.push("vendor _runLoop() does not use _adaptiveYield — yields will be throttled");
+if (countST(vRunLoop) > countST(cRunLoop))
+  problems.push(`vendor _runLoop() has more setTimeout() yields (${countST(vRunLoop)}) than the container (${countST(cRunLoop)}) — a hot-path yield regressed (perf!)`);
 
 if (problems.length) {
   console.error("✗ vendor drift detected (sdk/src/vendor/nanovm.mjs vs nano/container/nanovm.mjs):\n");
