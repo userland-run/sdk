@@ -28,7 +28,7 @@ export interface CdnOptions {
 const JSDELIVR_CDN = "https://cdn.jsdelivr.net/npm";
 const JSDELIVR_DATA = "https://data.jsdelivr.com/v1/packages/npm";
 const INDEX_PKG = "@userland-run/nano-catalog";
-const CAS_PKG = "@userland-run/cas";
+const CAS_PKG = "@userland-run/nano-cas";
 
 export class CdnClient {
   private readonly baseUrl?: string;
