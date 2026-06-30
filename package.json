@@ -1,6 +1,6 @@
 {
   "name": "@userland-run/nano-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TypeScript SDK for NanoVM — run real Linux binaries (BusyBox, Node.js) in the browser.",
   "type": "module",
   "license": "MPL-2.0 OR LicenseRef-UEL",
