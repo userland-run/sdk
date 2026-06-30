@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: MPL-2.0 OR LicenseRef-UEL
+// Copyright (C) 2026 And The Next GmbH - https://userland.run
+//
+// Types for the terminal DISPLAY service — `@userland-run/nano-sdk/terminal`.
+// Hand-authored (the implementation is bundled from the @userland-run/terminal
+// source, whose own ambient WebGPU/container types aren't threaded through the
+// SDK's d.ts build). Mirrors the canonical TerminalConfig in src/types.ts.
+
+export interface TerminalPreviewConfig {
+  /** Ports offered in the preview port selector. Default [8080]. */
+  ports?: number[];
+  /** Port selected when the Preview tab first opens. Default ports[0]. */
+  defaultPort?: number;
+}
+
+export interface TerminalFeatureConfig {
+  /** Catalog sidebar (searchable, installable app list). Default on. */
+  catalog?: boolean;
+  /** ⌘K command palette. Default on. */
+  palette?: boolean;
+  /** Files sidebar panel with CRUD on files/folders. Default on. */
+  files?: boolean;
+  /** CodeMirror file editor (opens in the Editor tab). Default on. */
+  editor?: boolean;
+  /** Server-app preview (iframe over the in-VM HTTP server). Default on. */
+  preview?: boolean | TerminalPreviewConfig;
+}
+
+export interface TerminalConfig {
+  /** nano.wasm URL. Default "/nano.wasm". */
+  wasmUrl?: string;
+  /** Guest RAM in MB. Default 1800 (V8/Node OOMs below ~1.8 GB). */
+  ramMB?: number;
+  /** Command booted as the interactive session. Default "sh -i". */
+  shellCommand?: string;
+  /** Initial terminal font size in px. Default 12. */
+  fontPx?: number;
+  /** Service-worker URL backing the preview bridge. Default "/nano-sw.js". */
+  serviceWorkerUrl?: string;
+  /** Feature toggles; omitted features use the defaults above. */
+  features?: TerminalFeatureConfig;
+}
+
+/** Programmatic handle returned by {@link createTerminal}. */
+export interface TerminalHandle {
+  /** The running NanoVM instance (read/write the VFS, run commands). */
+  vm: unknown;
+  /** Open a guest file in the Editor tab (no-op if the editor is disabled). */
+  openFile: (path: string) => void;
+  /** Reveal the Preview tab on a port (no-op if preview is disabled). */
+  showPreview: (port?: number) => void;
+  /** Re-list the Files panel tree (after external FS changes). */
+  refreshFiles: () => void;
+}
+
+/**
+ * Mount a composable terminal into `target` (a selector, element, or shadow
+ * root). It injects its own scaffold + scoped stylesheet, boots a NanoVM, and
+ * resolves once the interactive session is live. Prefer {@link defineNanoTerminal}
+ * + the `<nano-terminal>` element for declarative use.
+ */
+export function createTerminal(
+  target?: string | HTMLElement | ShadowRoot,
+  config?: TerminalConfig,
+): Promise<TerminalHandle>;
+
+/** The `<nano-terminal>` custom element (Shadow DOM; fully CSS-encapsulated). */
+export declare class NanoTerminalElement extends HTMLElement {
+  /** Programmatic config; merged over (and overriding) attribute-derived config. */
+  config: TerminalConfig;
+  /** Resolves to the running {@link TerminalHandle} once booted (null before connect). */
+  get ready(): Promise<TerminalHandle> | null;
+  connectedCallback(): void;
+}
+
+/** Register the `<nano-terminal>` custom element (idempotent). */
+export function defineNanoTerminal(tag?: string): void;

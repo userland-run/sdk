@@ -10,6 +10,13 @@
  */
 
 export { Nano, createNano } from "./core/nano";
+export {
+  createHeadless,
+  type HeadlessConfig,
+  type HeadlessSession,
+  type HeadlessServer,
+  type HeadlessServeOptions,
+} from "./headless";
 export { Vfs } from "./core/vfs";
 export { nanoImage } from "./core/images";
 export type { NanoImageOptions, ResolvedImage } from "./core/images";

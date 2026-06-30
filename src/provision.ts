@@ -122,7 +122,10 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
     opts.workerFactory,
   );
 
-  const target = { writeFile: (p: string, b: Uint8Array) => client.fs.writeFile(p, b) };
+  // Forward the file mode: the catalog ships busybox/node as 0755, and the guest
+  // enforces the exec bit (execve → EACCES without it), so dropping mode here would
+  // leave /bin/busybox non-executable and break `sh`-launched applets (pipes, etc.).
+  const target = { writeFile: (p: string, b: Uint8Array, mode?: number) => client.fs.writeFile(p, b, mode) };
 
   log(`installing ${ref}…`);
   const manifest = await catalog.install(target as never, ref);

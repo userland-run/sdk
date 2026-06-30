@@ -87,8 +87,8 @@ class WorkerScriptEngine implements ScriptEngine {
 /** Async filesystem proxy (every method is an RPC round-trip). */
 class WorkerFs {
   constructor(private readonly client: NanoWorkerClient) {}
-  writeFile(path: string, content: string | Uint8Array): Promise<void> {
-    return this.client.call("fs", "writeFile", [path, content]) as Promise<void>;
+  writeFile(path: string, content: string | Uint8Array, mode?: number): Promise<void> {
+    return this.client.call("fs", "writeFile", [path, content, mode]) as Promise<void>;
   }
   readText(path: string): Promise<string | null> {
     return this.client.call("fs", "readText", [path]) as Promise<string | null>;
