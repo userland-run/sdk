@@ -11,6 +11,9 @@
     "url": "git+https://github.com/userland-run/sdk.git"
   },
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
     "types",
