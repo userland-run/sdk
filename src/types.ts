@@ -223,6 +223,8 @@ export interface TerminalFeatureConfig {
   editor?: boolean;
   /** Server-app preview (iframe over the in-VM HTTP server). */
   preview?: boolean | TerminalPreviewConfig;
+  /** AI assistant sidebar panel (Chrome Prompt API + optional cloud model). */
+  assistant?: boolean;
 }
 
 /** Settings for the server-app preview feature. */
@@ -231,6 +233,38 @@ export interface TerminalPreviewConfig {
   ports?: number[];
   /** Port selected when the Preview tab first opens. Default ports[0]. */
   defaultPort?: number;
+}
+
+/** One conversational turn passed to a cloud model. */
+export interface AssistantChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** A request handed to a host-injected cloud `generate` callback. */
+export interface CloudRequest {
+  system: string;
+  messages: AssistantChatTurn[];
+  /** When set, the model must return JSON conforming to this schema. */
+  responseSchema?: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+/**
+ * Host-injected cloud model for the assistant. Prefer `generate` (keys live in
+ * the host's proxy, so nothing ships in the client); `endpoint` is a convenience
+ * for a plain JSON HTTP proxy returning `{ text }`.
+ */
+export interface CloudModelConfig {
+  label?: string;
+  generate?: (req: CloudRequest) => Promise<string>;
+  endpoint?: string;
+  headers?: Record<string, string>;
+}
+
+/** Assistant wiring (e.g. an optional cloud model alongside on-device Nano). */
+export interface TerminalAssistantConfig {
+  cloud?: CloudModelConfig;
 }
 
 /**
@@ -251,4 +285,6 @@ export interface TerminalConfig {
   serviceWorkerUrl?: string;
   /** Feature toggles; omitted features use the terminal defaults. */
   features?: TerminalFeatureConfig;
+  /** Assistant wiring (e.g. an optional cloud model). */
+  assistant?: TerminalAssistantConfig;
 }

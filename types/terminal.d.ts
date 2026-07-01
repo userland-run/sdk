@@ -41,10 +41,36 @@ export interface TerminalConfig {
   features?: TerminalFeatureConfig;
 }
 
+/** Install-progress event surfaced by {@link TerminalHandle.installApp}. */
+export interface InstallProgress {
+  phase: "index" | "manifest" | "chunk" | "write" | "done";
+  file?: string;
+  chunk?: string;
+  fetched?: number;
+  total?: number;
+}
+
+/** Options for {@link TerminalHandle.installApp}. */
+export interface InstallAppOptions {
+  /** Receives the installer's phase/chunk events (e.g. to drive a progress bar). */
+  onProgress?: (e: InstallProgress) => void;
+  /** Suppress the in-terminal install echo — keep the shell pane clean. */
+  quiet?: boolean;
+}
+
 /** Programmatic handle returned by {@link createTerminal}. */
 export interface TerminalHandle {
   /** The running NanoVM instance (read/write the VFS, run commands). */
   vm: unknown;
+  /**
+   * Install a catalog app ("name" or "name@version") into the running guest's
+   * VFS — the SDK's verified, OPFS-cached, persisted installer (the same path
+   * the catalog sidebar uses). `onProgress` receives phase/chunk events; `quiet`
+   * suppresses the in-terminal echo. Resolves `true` on success; rejects if the
+   * catalog feature is disabled. Use it to provision a toolchain (e.g. node +
+   * tsc) on boot without leaving the SDK.
+   */
+  installApp: (ref: string, opts?: InstallAppOptions) => Promise<boolean>;
   /** Open a guest file in the Editor tab (no-op if the editor is disabled). */
   openFile: (path: string) => void;
   /** Reveal the Preview tab on a port (no-op if preview is disabled). */
