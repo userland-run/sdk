@@ -13,7 +13,7 @@
 // preserve the SDK-only lazy-fetch, then run `npm run check:vendor`. See
 // src/vendor/README.md.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,6 +55,14 @@ const normalize = (s) =>
     .replace(/\/\/.*$/gm, "")
     .replace(/\s+/g, " ")
     .trim();
+
+// CI checks out only the sdk repo — without the sibling nano/ checkout the
+// invariant can't be evaluated there; it is enforced in the local workspace
+// (and by nano's own CI on the container side).
+if (!existsSync(CONTAINER)) {
+  console.log(`check-vendor: sibling container not present (${CONTAINER}); skipping`);
+  process.exit(0);
+}
 
 const container = readFileSync(CONTAINER, "utf8");
 const vendor = readFileSync(VENDOR, "utf8");
