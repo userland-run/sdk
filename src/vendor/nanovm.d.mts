@@ -86,6 +86,26 @@ export interface VirtualServer {
   injectConnection(port: number, httpRequest: string): Promise<Uint8Array>;
 }
 
+/** Request handed to a {@link NanoVM.setLlmBridge} handler. */
+export interface LlmBridgeRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** Result a {@link NanoVM.setLlmBridge} handler may return. */
+export type LlmBridgeResult =
+  | Response
+  | {
+      status?: number;
+      statusText?: string;
+      headers?: Record<string, string> | Headers;
+      body?: Uint8Array | string | ReadableStream<Uint8Array> | null;
+    };
+
+export type LlmBridgeHandler = (req: LlmBridgeRequest) => Promise<LlmBridgeResult> | LlmBridgeResult;
+
 export declare class NanoVM {
   static create(opts: CreateOptions): Promise<NanoVM>;
 
@@ -111,6 +131,15 @@ export declare class NanoVM {
     path: string,
     meta: { size: number; mode: string | number; resolve: () => Promise<Uint8Array> },
   ): void;
+
+  // --- network bridge (/dev/__net__) ---
+  setNetwork(opts?: { corsProxyUrl?: string | null; disabled?: boolean }): void;
+  /**
+   * Route guest requests to the internal origin `nanoinfer.internal` to an
+   * in-page handler instead of fetch(). A ReadableStream body streams to the
+   * guest incrementally (SSE-friendly). Pass null to unregister.
+   */
+  setLlmBridge(handler: LlmBridgeHandler | null): void;
 
   // --- interactive stdin (present at runtime; beyond the v0.1 spec) ---
   writeStdin(bytes: Uint8Array | string): void;
