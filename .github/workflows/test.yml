@@ -60,6 +60,10 @@ jobs:
           cache: npm
           cache-dependency-path: sdk/package-lock.json
 
+      - name: Install terminal deps (bundled source needs its imports)
+        working-directory: terminal
+        run: npm ci
+
       - name: Install + build
         run: |
           npm ci
