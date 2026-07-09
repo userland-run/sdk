@@ -24,6 +24,60 @@ export interface TerminalFeatureConfig {
   editor?: boolean;
   /** Server-app preview (iframe over the in-VM HTTP server). Default on. */
   preview?: boolean | TerminalPreviewConfig;
+  /** AI assistant panel (Chrome Prompt API + optional cloud/local). Default on. */
+  assistant?: boolean;
+}
+
+/** The assistant's permission mode (Claude-Code-style). Default "ask". */
+export type AssistantMode = "plan" | "ask" | "acceptEdits" | "auto";
+
+/** A request handed to a host-injected cloud `generate` callback. */
+export interface CloudRequest {
+  system: string;
+  messages: { role: "user" | "assistant"; content: string }[];
+  responseSchema?: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+/**
+ * Host-injected cloud model wiring. Prefer `generate` (API keys live in the
+ * host's proxy — the component ships no secrets); `endpoint` is a convenience
+ * for a plain JSON HTTP proxy that returns `{ text }`.
+ */
+export interface CloudModelConfig {
+  label?: string;
+  generate?: (req: CloudRequest) => Promise<string>;
+  endpoint?: string;
+  headers?: Record<string, string>;
+}
+
+/** Local WebGPU model (nanoinfer engine) wiring. */
+export interface LocalModelConfig {
+  /** "qwen" (default, 1.5B GGUF) or "ornith" (the 9B GDN hybrid). */
+  engine?: "qwen" | "ornith";
+  /** Model URL: GGUF for qwen, packed Q4 safetensors for ornith. */
+  ggufUrl?: string;
+  /** tokenizer.json URL. */
+  tokenizerUrl?: string;
+  /** Base URL of the nanoinfer wasm-bindgen bundle. */
+  engineBase?: string;
+  /** KV capacity in tokens (bounds prompt + generation). Default 2048. */
+  maxSeq?: number;
+  label?: string;
+}
+
+/** Assistant wiring: enable/defaults + optional cloud & local model backends. */
+export interface TerminalAssistantConfig {
+  /** Enable the assistant (default on; parallels `features.assistant`). */
+  enabled?: boolean;
+  /** Model selected when the panel first opens. Default "nano". */
+  defaultModel?: "nano" | "cloud" | "local";
+  /** Permission mode the chat starts in. Default "ask". */
+  defaultMode?: AssistantMode;
+  /** Optional host-injected cloud model. */
+  cloud?: CloudModelConfig;
+  /** Local WebGPU model; `false` hides it, omit to auto-offer when available. */
+  local?: LocalModelConfig | false;
 }
 
 export interface TerminalConfig {
@@ -39,6 +93,8 @@ export interface TerminalConfig {
   serviceWorkerUrl?: string;
   /** Feature toggles; omitted features use the defaults above. */
   features?: TerminalFeatureConfig;
+  /** Assistant wiring (enable, default model/mode, optional cloud/local). */
+  assistant?: TerminalAssistantConfig;
 }
 
 /** Install-progress event surfaced by {@link TerminalHandle.installApp}. */

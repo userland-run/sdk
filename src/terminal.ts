@@ -27,4 +27,10 @@ export type {
   TerminalConfig,
   TerminalFeatureConfig,
   TerminalPreviewConfig,
+  TerminalAssistantConfig,
 } from "../../terminal/src/config";
+export type {
+  AssistantMode,
+  CloudModelConfig,
+} from "../../terminal/src/assistant/types";
+export type { LocalModelConfig } from "../../terminal/src/assistant/local";
