@@ -147,6 +147,9 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
       argv: w.argv,
       env: envToArray(w.env),
       maxSteps: w.maxSteps,
+      // Ready-probe capture (servers): snapshot when the host probe returns 200,
+      // not at a guest sentinel. The runner picks snapshotAppReady when present.
+      ready: w.ready,
     });
     // Prewarm off the main thread; the first run awaits the same in-flight snapshot.
     void client.warmup().catch(() => {});

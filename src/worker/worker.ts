@@ -33,10 +33,28 @@ let appWarmup: Record<string, unknown> | null = null;
 let appSnap: unknown = null;
 let appSnapPromise: Promise<unknown> | null = null;
 
-function ensureAppSnap(raw: { snapshotApp: (o: unknown) => Promise<unknown> }): Promise<unknown> {
+function ensureAppSnap(
+  raw: {
+    snapshotApp: (o: unknown) => Promise<unknown>;
+    snapshotAppReady: (o: unknown) => Promise<unknown>;
+  },
+): Promise<unknown> {
   if (appSnap) return Promise.resolve(appSnap);
   if (!appWarmup) return Promise.reject(new Error("nano-sdk worker: no warmup configured (call vm.setWarmup)"));
-  if (!appSnapPromise) appSnapPromise = raw.snapshotApp(appWarmup).then((s) => (appSnap = s));
+  if (!appSnapPromise) {
+    // A `ready` probe → capture when the server answers (warm, serviceable) via
+    // snapshotAppReady; otherwise the guest `/dev/__snapshot__` sentinel path.
+    const w = appWarmup as { ready?: { port: number; path: string; status?: number } };
+    const build = w.ready
+      ? raw.snapshotAppReady({
+          ...(appWarmup as object),
+          readyPort: w.ready.port,
+          readyRequest: `GET ${w.ready.path} HTTP/1.1\r\nHost: nano\r\nConnection: close\r\n\r\n`,
+          readyStatus: w.ready.status,
+        })
+      : raw.snapshotApp(appWarmup);
+    appSnapPromise = build.then((s) => (appSnap = s));
+  }
   return appSnapPromise;
 }
 
@@ -192,7 +210,7 @@ async function dispatch(
       return nanoInst.injectConnection(args[0] as number, args[1] as string);
     case "vm": {
       // Generic, runtime-agnostic snapshot/restore (recipe-driven warmup + run).
-      const raw = (nanoInst as unknown as { raw: { snapshotApp: (o: unknown) => Promise<unknown>; restoreAndRun: (s: unknown, src: string, o: unknown) => Promise<unknown> } }).raw;
+      const raw = (nanoInst as unknown as { raw: { snapshotApp: (o: unknown) => Promise<unknown>; snapshotAppReady: (o: unknown) => Promise<unknown>; restoreAndRun: (s: unknown, src: string, o: unknown) => Promise<unknown> } }).raw;
       if (method === "setWarmup") {
         appWarmup = args[0] as Record<string, unknown>;
         appSnap = null;

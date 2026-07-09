@@ -36,6 +36,15 @@ export interface AppRecipe {
     argv: string[];
     env?: Record<string, string>;
     maxSteps?: number;
+    /**
+     * Server readiness probe. When set, the runner captures the snapshot the
+     * moment a host GET of `path` on `port` returns HTTP `status` (default 200) —
+     * i.e. a warm, serviceable server — instead of waiting for a guest
+     * `/dev/__snapshot__` sentinel. Required for servers whose readiness a guest
+     * launcher can't report (the guest can't loopback to its own listener), and it
+     * captures a much faster-restoring snapshot (routes + handler warm).
+     */
+    ready?: { port: number; path: string; status?: number };
   };
   /** How a run request becomes the script injected at `/dev/__run__`. */
   run?: {
