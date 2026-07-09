@@ -982,8 +982,14 @@ class NanoVM {
     const evloop = X.vm_evloop_dump
       ? new Uint8Array(this._memory.buffer, X.vm_evloop_dump(), X.vm_evloop_size()).slice()
       : null;
+    // Decoded-block cache — restoring it (vs re-decoding cold) is the dominant
+    // warm-restore speedup (host RAM memcpy is only ~250ms; a cold block cache
+    // costs ~15s re-decoding a warm server's code).
+    const blocks = X.vm_blocks_ptr
+      ? new Uint8Array(this._memory.buffer, X.vm_blocks_ptr(), X.vm_blocks_size()).slice()
+      : null;
 
-    return { vmStruct, lowRAM, lowEnd, stackRAM, stackStart, memfs, sockets, evloop };
+    return { vmStruct, lowRAM, lowEnd, stackRAM, stackStart, memfs, sockets, evloop, blocks };
   }
 
   /**
@@ -1026,6 +1032,9 @@ class NanoVM {
     if (snap.evloop && X.vm_evloop_dump) {
       mem.set(snap.evloop, X.vm_evloop_dump());
       X.vm_evloop_load();
+    }
+    if (snap.blocks && X.vm_blocks_ptr) {
+      mem.set(snap.blocks, X.vm_blocks_ptr());
     }
 
     // 2. Restore VM struct
