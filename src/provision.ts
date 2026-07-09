@@ -28,6 +28,14 @@ export interface ProvisionOptions {
   recipe?: AppRecipe;
   /** Extra catalog apps to install alongside (e.g. ["busybox@1.36.1"] for a shell). */
   extraApps?: string[];
+  /**
+   * Fetch a prebuilt warm-snapshot artifact by name (e.g. "opencode.snapshot.gz")
+   * → its gzipped bytes. When the recipe declares `warmup.snapshot` and this is
+   * supplied, provision loads that snapshot (gunzip → deserialize → restore) and
+   * SKIPS the ~minute-long runtime warmup build. Consumers wire this to wherever
+   * the artifact is hosted (catalog CDN, bundled asset, …). Absent → live build.
+   */
+  snapshotFetcher?: (name: string) => Promise<ArrayBuffer>;
   onProgress?: (msg: string) => void;
 }
 
@@ -138,21 +146,36 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
   }
 
   if (recipe.warmup) {
-    log("warming up…");
     const w = recipe.warmup;
-    await client.setWarmup({
-      elfPath: w.elfPath,
-      launcher: w.launcher,
-      launcherPath: w.launcherPath,
-      argv: w.argv,
-      env: envToArray(w.env),
-      maxSteps: w.maxSteps,
-      // Ready-probe capture (servers): snapshot when the host probe returns 200,
-      // not at a guest sentinel. The runner picks snapshotAppReady when present.
-      ready: w.ready,
-    });
-    // Prewarm off the main thread; the first run awaits the same in-flight snapshot.
-    void client.warmup().catch(() => {});
+    // Prefer a prebuilt, shipped snapshot (gunzip → deserialize → restore) over
+    // building it live — the runtime build for a server can take ~a minute.
+    let loadedPrebuilt = false;
+    if (w.snapshot && opts.snapshotFetcher) {
+      try {
+        log(`loading prebuilt snapshot ${w.snapshot}…`);
+        const gz = await opts.snapshotFetcher(w.snapshot);
+        await client.loadSnapshot(gz);
+        loadedPrebuilt = true;
+      } catch (e) {
+        log(`prebuilt snapshot unavailable (${(e as Error).message}); building live…`);
+      }
+    }
+    if (!loadedPrebuilt) {
+      log("warming up…");
+      await client.setWarmup({
+        elfPath: w.elfPath,
+        launcher: w.launcher,
+        launcherPath: w.launcherPath,
+        argv: w.argv,
+        env: envToArray(w.env),
+        maxSteps: w.maxSteps,
+        // Ready-probe capture (servers): snapshot when the host probe returns 200,
+        // not at a guest sentinel. The runner picks snapshotAppReady when present.
+        ready: w.ready,
+      });
+      // Prewarm off the main thread; the first run awaits the same in-flight snapshot.
+      void client.warmup().catch(() => {});
+    }
   }
 
   const fileScript = (file: string): string =>

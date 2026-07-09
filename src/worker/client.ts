@@ -254,6 +254,11 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   warmup(): Promise<void> {
     return this.call("vm", "warmup", []) as Promise<void>;
   }
+  /** Adopt a prebuilt, gzipped snapshot (skips the runtime warmup build). The
+   *  worker gunzips + deserializes it into the app snapshot restoreRun resolves. */
+  loadSnapshot(gz: ArrayBuffer): Promise<void> {
+    return this.call("vm", "loadSnapshot", [gz]) as Promise<void>;
+  }
   /** Restore the warm snapshot and run `script` (awaits any in-flight warmup). */
   restoreRun(script: string, opts?: NodeRunOptions): Promise<ExecResult> {
     return this.call("vm", "restoreRun", [script, stripOnData(opts)], opts?.onData) as Promise<ExecResult>;

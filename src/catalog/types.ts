@@ -45,6 +45,16 @@ export interface AppRecipe {
      * captures a much faster-restoring snapshot (routes + handler warm).
      */
     ready?: { port: number; path: string; status?: number };
+    /**
+     * Prebuilt-snapshot artifact name (e.g. "opencode.snapshot.gz"), produced
+     * off-VM by serializing a `snapshotAppReady` capture and gzipping it (see the
+     * recipe's build-snapshot tool). When set AND the runner is given a
+     * `snapshotFetcher` (ProvisionOptions), provision loads this prebuilt snapshot
+     * — gunzip → deserializeSnapshot → the worker's app snapshot — and SKIPS the
+     * ~minute-long runtime warmup build. Falls back to the live build when the
+     * artifact or fetcher is absent.
+     */
+    snapshot?: string;
   };
   /** How a run request becomes the script injected at `/dev/__run__`. */
   run?: {

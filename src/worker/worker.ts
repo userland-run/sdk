@@ -16,7 +16,15 @@
 import type { Req, Res } from "./protocol";
 import { createNano, type Nano } from "../core/nano";
 import { NodeRuntime } from "../node/node-runtime";
+import { deserializeSnapshot } from "../vendor/nanovm.mjs";
 import type { ScriptEngine, ScriptEngineOptions } from "../types";
+
+/** gunzip a prebuilt snapshot artifact (works in browser workers + Node 18+). */
+async function gunzip(gz: ArrayBuffer): Promise<Uint8Array> {
+  const ds = new DecompressionStream("gzip");
+  const stream = new Blob([gz]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
 
 interface WorkerScope {
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -215,6 +223,15 @@ async function dispatch(
         appWarmup = args[0] as Record<string, unknown>;
         appSnap = null;
         appSnapPromise = null;
+        return true;
+      }
+      if (method === "loadSnapshot") {
+        // Shipped-snapshot path: adopt a prebuilt, gzipped snapshot instead of
+        // building one at runtime. gunzip → deserialize → set it as the app
+        // snapshot so restoreRun resolves instantly (no warmup build).
+        const bytes = await gunzip(args[0] as ArrayBuffer);
+        appSnap = deserializeSnapshot(bytes);
+        appSnapPromise = Promise.resolve(appSnap);
         return true;
       }
       if (method === "warmup") {

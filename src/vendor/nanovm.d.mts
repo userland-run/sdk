@@ -59,6 +59,11 @@ export interface VMSnapshot {
   stackRAM: Uint8Array;
   stackStart: number;
   memfs: unknown[];
+  /** Persisted host-side statics restored on a warm resume (present on live-server
+   *  snapshots): the socket table, event-loop statics, and decoded-block cache. */
+  sockets?: Uint8Array | null;
+  evloop?: Uint8Array | null;
+  blocks?: Uint8Array | null;
 }
 
 /** Minimal node shape exposed by the vendored MemFS. */
@@ -156,3 +161,12 @@ export declare class NanoVM {
   /** Raw byte tap: (fd, bytes) before UTF-8 decode. Assignable directly. */
   _onStdoutBytes: ((fd: number, bytes: Uint8Array) => void) | null;
 }
+
+/**
+ * Serialize a {@link NanoVM.snapshot} to one portable Uint8Array (format "NSN1":
+ * magic | u32 metaLen | meta(JSON) | region bytes | memfs data blobs) so it can be
+ * gzipped, shipped in a catalog recipe, and restored on a fresh VM.
+ * {@link deserializeSnapshot} is the exact inverse.
+ */
+export declare function serializeSnapshot(snap: VMSnapshot): Uint8Array;
+export declare function deserializeSnapshot(bytes: Uint8Array): VMSnapshot;
