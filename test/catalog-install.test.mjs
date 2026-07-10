@@ -13,7 +13,7 @@
 
 import { generateKeyPairSync, sign as edSign, createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { Catalog, canonicalize } from "../dist/index.js";
+import { Catalog, canonicalize, manifestKind, isWasmKind } from "../dist/index.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.error(`  FAIL: ${m}`); } };
@@ -128,6 +128,49 @@ class FakeTarget {
   const catalog = new Catalog({ cdn: { baseUrl: "local://catalog", fetchFn }, publicKeyB64: pubRawB64 });
   const m = await catalog.manifest("demo");
   ok(m.version === "1.0.0", "resolve: bare name resolves to the published version");
+}
+
+// --- 6. wasm-app artifact kind (wasm-tier D1): signed, verified, installed ---
+{
+  // A minimal but valid wasm module (magic + version) as the artifact payload.
+  const wasmBin = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+  const wgz = gzipSync(wasmBin, { level: 9 });
+  const wChunkSha = sha(wgz);
+  const wManifest = finalize({
+    name: "wtool", version: "2.0.0", kind: "wasm-app", abi: "wasm32-wasip1",
+    entrypoint: { argv: ["wtool.wasm"], env: {} },
+    files: [{ path: "/usr/bin/wtool.wasm", mode: "0755", compression: "gzip", size: wasmBin.length, sha256: wChunkSha, chunks: [wChunkSha] }],
+    conformance: { nano_min_version: "0.1.0", syscalls_used: [], golden_sha256: "cafe", instructions: 1, tested: true },
+    size: wgz.length,
+  });
+  const wBytes = Buffer.from(JSON.stringify(wManifest, null, 2) + "\n");
+  const wSha = sha(wBytes);
+  const wIndex = finalize({ generation: 1, nano_min_version: "0.1.0", apps: { "wtool@2.0.0": wSha } });
+
+  const blobs = new Map([
+    ["/index.json", Buffer.from(JSON.stringify(wIndex))],
+    [`/cas/${wSha}`, wBytes],
+    [`/cas/${wChunkSha}`, wgz],
+  ]);
+  const fetchFn = async (url) => {
+    const key = url.replace("local://catalog", "");
+    if (!blobs.has(key)) return { ok: false, status: 404 };
+    const buf = blobs.get(key);
+    return { ok: true, status: 200, json: async () => JSON.parse(buf.toString("utf8")), arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) };
+  };
+  const catalog = new Catalog({ cdn: { baseUrl: "local://catalog", fetchFn }, publicKeyB64: pubRawB64 });
+  const target = new FakeTarget();
+  const m = await catalog.install(target, "wtool");
+  ok(m.kind === "wasm-app", "wasm-app: kind survives sign/verify round-trip");
+  ok(manifestKind(m) === "wasm-app", "wasm-app: manifestKind() reads it");
+  ok(isWasmKind(manifestKind(m)), "wasm-app: classified as a wasm tier");
+  ok(m.abi === "wasm32-wasip1", "wasm-app: wasip1 abi");
+  ok(target.writes.length === 1 && target.writes[0].path === "/usr/bin/wtool.wasm", "wasm-app: .wasm installed onto PATH");
+  ok(Buffer.from(target.writes[0].content).equals(wasmBin), "wasm-app: bytes decompress to the wasm module (unstripped)");
+  // Back-compat: a kind-less manifest defaults to elf-app.
+  ok(manifestKind({}) === "elf-app", "default: absent kind ⇒ elf-app");
+  ok(manifestKind(manifest) === "elf-app", "default: the demo (no kind) is elf-app");
+  ok(!isWasmKind("elf-app"), "elf-app is not a wasm tier");
 }
 
 console.log(`\ncatalog install tests: ${pass} passed, ${fail} failed`);

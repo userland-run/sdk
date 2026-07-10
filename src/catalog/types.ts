@@ -69,10 +69,25 @@ export interface AppRecipe {
   outputFilters?: string[];
 }
 
+/**
+ * The artifact tier a catalog app targets (wasm-tier §9, D1). Absent ⇒
+ * `"elf-app"` for back-compat with pre-`kind` manifests.
+ *   "elf-app"        a RISC-V ELF run by the emulator (BusyBox, node, …).
+ *   "wasm-app"       a wasm32-wasip1 module run by the wasm tier (kind:"wasm"
+ *                    Kernel process); installed onto PATH, routed by `.wasm`.
+ *   "wasm-service"   a wasm Kernel Service (SWC, esbuild, …) — registered with
+ *                    the service registry, reached over the `svc.*` bus, NOT PATH.
+ *   "wasm-component" a WASI-0.2 component (wasi-http, …) — served behind the
+ *                    ServeBridge (W-3). Reserved; not yet runnable in this build.
+ */
+export type ArtifactKind = "elf-app" | "wasm-app" | "wasm-service" | "wasm-component";
+
 /** A signed app manifest (the `.napp`, spec §6.1). */
 export interface Manifest {
   name: string;
   version: string;
+  /** Artifact tier. Absent ⇒ "elf-app". See {@link ArtifactKind}. */
+  kind?: ArtifactKind;
   abi: string;
   entrypoint: { argv: string[]; env: Record<string, string> };
   files: ManifestFile[];
@@ -156,4 +171,14 @@ export interface InstallProgress {
   chunk?: string;
   fetched?: number;
   total?: number;
+}
+
+/** The artifact tier of a manifest, defaulting to "elf-app" (wasm-tier D1). */
+export function manifestKind(manifest: Pick<Manifest, "kind">): ArtifactKind {
+  return manifest.kind ?? "elf-app";
+}
+
+/** True for any wasm tier (app/service/component) — routed off the emulator. */
+export function isWasmKind(kind: ArtifactKind): boolean {
+  return kind === "wasm-app" || kind === "wasm-service" || kind === "wasm-component";
 }
