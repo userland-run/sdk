@@ -13,6 +13,7 @@
  */
 
 import { MemFS } from "./memfs.mjs";
+import { Kernel } from "./kernel/index.mjs";
 
 // ============================================================
 // VM struct constants (must match src/types.rs)
@@ -193,7 +194,16 @@ class NanoVM {
     this._ramSize = X.vm_ram_size(this._vmPtr);
 
     // Initialize MemFS with standard directories and files
-    this._memfs = new MemFS();
+    // The Kernel owns all cross-process state (spec §4); the VM is its
+    // first client. Absent opts.kernel, a private Kernel keeps the
+    // historical single-VM embedding working unchanged.
+    this._kernel = opts.kernel || new Kernel();
+    this._memfs = this._kernel.vfs.rootMem;
+    this._process = this._kernel.registerProcess({
+      kind: "vm-init",
+      argv: ["nanovm"],
+      cwd: "/root",
+    });
     this._seedFS();
 
     // Load bundled ELFs if available (decompresses gzipped data)
@@ -828,6 +838,11 @@ class NanoVM {
   }
 
   destroy() {
+    if (this._kernel && this._process) {
+      this._kernel.proc.exit(this._process.pid, 0);
+    }
+    this._kernel = null;
+    this._process = null;
     this._memfs = null;
     this._exports = null;
     this._memory = null;
@@ -1055,6 +1070,7 @@ class NanoVM {
 
     // 6. Rebuild MemFS from snapshot
     this._memfs = MemFS.deserialize(snap.memfs);
+    this._kernel.vfs.replaceRootMem(this._memfs);
 
     // 6b. Inject extra user files (e.g. from OPFS)
     if (opts.extraFiles) {
