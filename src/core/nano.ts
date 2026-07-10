@@ -30,6 +30,20 @@ function singleQuote(arg: string): string {
 }
 
 /**
+ * Pin-lookup keys for a node() argv (which omits the leading "node"): the entry
+ * script/bin basename (e.g. `node_modules/.bin/jest` → "jest"). Inline eval
+ * (`-e`/`-p`) has no entry, so routing falls through to the default engine.
+ */
+function nodeEngineKeys(args: string[]): string[] {
+  for (const a of args) {
+    if (a === "-e" || a === "--eval" || a === "-p" || a === "--print" || a === "-") return [];
+    if (a.startsWith("-")) continue; // unary flag (best-effort)
+    return [a.slice(a.lastIndexOf("/") + 1)];
+  }
+  return [];
+}
+
+/**
  * Pick a guest-RAM size when the caller doesn't specify one.
  *
  * Node's V8 needs ~1.8GB of guest RAM to initialize its sandbox/code range —
@@ -61,6 +75,9 @@ export class Nano implements ShellHost, ConnectionInjector {
   /** boa.wasm source from NanoConfig.scripting (lazy-loaded on first scripting()). */
   private scriptingWasm?: BinarySource;
   private boaRuntime: BoaRuntime | null = null;
+  /** Engine backing node() and per-program tier pins (spec §14). */
+  private nodeEngine: "vm" | "nodert" | "auto" = "vm";
+  private nodeRouting: Record<string, "vm" | "nodert"> = {};
 
   private constructor(raw: NanoVM) {
     this.raw = raw;
@@ -94,6 +111,8 @@ export class Nano implements ShellHost, ConnectionInjector {
 
     const nano = new Nano(raw);
     nano.scriptingWasm = config.scripting?.wasm;
+    nano.nodeEngine = config.engines?.node ?? "vm";
+    nano.nodeRouting = { ...config.engines?.routing };
     if (config.warmup !== false) {
       // Pre-JIT exec() with a no-op; best-effort.
       try {
@@ -112,9 +131,38 @@ export class Nano implements ShellHost, ConnectionInjector {
     return this.raw.run(command, toRuntimeOpts(opts));
   }
 
-  /** Run the node ELF with an explicit argv. */
+  /**
+   * Run node with an explicit argv, on the engine chosen by {@link NanoConfig.engines}
+   * (spec §14). The default `"vm"` runs the RISC-V node ELF (today's behavior).
+   * `"nodert"`/`"auto"`, or a `routing` pin to `"nodert"`, require the
+   * host-engine runtime; until it is wired into this build they throw a
+   * documented `ERR_NODERT_UNWIRED` rather than silently running on the VM.
+   */
   node(args: string[], opts?: ExecOptions): Promise<ExecResult> {
+    const engine = this.resolveNodeEngine(args);
+    if (engine !== "vm") {
+      const err = new Error(
+        `nano-sdk: engine "${engine}" for node() needs the host-engine (nodert) runtime, ` +
+          "which is not wired into this SDK build. Use engines.node:\"vm\" (the default), " +
+          "or run the nodert tier directly via @userland-run/nodert. See spec §14.",
+      );
+      (err as { code?: string }).code = "ERR_NODERT_UNWIRED";
+      return Promise.reject(err);
+    }
     return this.raw.node(...args, toRuntimeOpts(opts, NODE_DEFAULT_MAX_STEPS));
+  }
+
+  /**
+   * Resolve which engine serves a node() call: a `routing` pin on the program
+   * (argv0) or entry-bin basename wins; otherwise the configured default.
+   * Pure — safe for embedders to call for introspection.
+   */
+  resolveNodeEngine(args: string[]): "vm" | "nodert" | "auto" {
+    for (const key of nodeEngineKeys(args)) {
+      const pinned = this.nodeRouting[key];
+      if (pinned) return pinned;
+    }
+    return this.nodeEngine;
   }
 
   /** Exact program + args, quoted, executed via sh (no shell operators). */

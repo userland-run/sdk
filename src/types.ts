@@ -37,6 +37,28 @@ export interface NanoConfig {
   warmup?: boolean;
   /** Guard against missing cross-origin isolation. Default "assert". */
   crossOriginIsolation?: "assert" | "ignore";
+  /**
+   * Which engine backs `nano.node()` (spec §14). Two tiers share one Kernel:
+   * the RISC-V emulator (`"vm"` — fidelity oracle, native addons) and the
+   * host-engine `nodert` tier (`"nodert"` — JIT speed). `"auto"` runs on nodert
+   * and falls back to the VM on a documented `ERR_NODERT_UNSUPPORTED`.
+   *
+   * `routing` pins specific programs to a tier regardless of the mode
+   * (e.g. `{ jest: "vm" }`) — contextify/addon-heavy tools stay on the emulator.
+   *
+   * Default `"vm"`: the emulator serves node until the nodert tier is wired
+   * into this build; `"nodert"`/`"auto"` throw a documented `ERR_NODERT_UNWIRED`
+   * error when the host-engine runtime is unavailable.
+   */
+  engines?: EngineConfig;
+}
+
+/** Engine selection for `nano.node()` (spec §14). */
+export interface EngineConfig {
+  /** Engine backing `nano.node()`. Default `"vm"`. */
+  node?: "vm" | "nodert" | "auto";
+  /** Per-program tier pins (S4), e.g. `{ jest: "vm", "node-gyp": "vm" }`. */
+  routing?: Record<string, "vm" | "nodert">;
 }
 
 // --- scripting (Boa) ---
