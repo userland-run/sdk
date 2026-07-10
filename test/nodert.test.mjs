@@ -17,8 +17,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Kernel, registerBuiltinServices } from "../src/vendor/kernel/index.mjs";
 import { createNodeEngine } from "../src/vendor/nodert/src/host/engine.mjs";
+import { loadLibBundle } from "../src/vendor/nodert/src/host/lib-loader.mjs";
+import { runNode } from "../src/vendor/nodert/src/host/runtime.mjs";
 import { Nano } from "../dist/index.js";
 
 async function freshKernel() {
@@ -112,4 +116,31 @@ test("Nano.node routing pin forces a program to the VM", async () => {
   const r = await n.node(["node_modules/.bin/jest", "--ci"]);
   assert.equal(r.stdout, "VM-JEST");
   assert.equal(vmCalled, 1);
+});
+
+// ---- C. K9-browser: boot from the host-loaded bundle in the vendored layout ----
+
+// Serve the vendored assets from disk, standing in for the browser's fetch of
+// dist/vendor/nodert/vendor/node-lib/*.
+function diskFetch(url) {
+  const buf = readFileSync(fileURLToPath(url));
+  return Promise.resolve({
+    ok: true, status: 200,
+    json: async () => JSON.parse(buf.toString("utf8")),
+    arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+  });
+}
+
+test("browser bundle path: vendored .gz inflates == .br, and nodert boots from bytes", async () => {
+  const disk = await loadLibBundle({ force: true });
+  const browser = await loadLibBundle({ force: true, forceBrowser: true, fetch: diskFetch });
+  assert.equal(browser.libBytes.length, disk.libBytes.length, "vendored gzip inflates to the brotli length");
+  const k = await freshKernel();
+  const r = await runNode(k, {
+    argv: ["node", "-e", 'process.stdout.write("browser-bytes:" + (5*5))'],
+    source: 'process.stdout.write("browser-bytes:" + (5*5))',
+    lib: browser, cwd: "/", env: {}, timeoutMs: 15000,
+  });
+  assert.equal(r.stdout, "browser-bytes:25");
+  assert.equal(r.exitCode, 0);
 });
