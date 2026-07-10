@@ -13,13 +13,15 @@
 // preserve the SDK-only lazy-fetch, then run `npm run check:vendor`. See
 // src/vendor/README.md.
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CONTAINER = join(here, "..", "..", "nano", "container", "nanovm.mjs");
 const VENDOR = join(here, "..", "src", "vendor", "nanovm.mjs");
+const KERNEL_SRC = join(here, "..", "..", "nano", "kernel");
+const KERNEL_VENDOR = join(here, "..", "src", "vendor", "kernel");
 
 // Methods that are pure mechanism — they must be byte-identical (modulo comments
 // + whitespace) between the container and the vendor.
@@ -87,10 +89,41 @@ if (!/_adaptiveYield\s*\(/.test(vRunLoop)) problems.push("vendor _runLoop() does
 if (countST(vRunLoop) > countST(cRunLoop))
   problems.push(`vendor _runLoop() has more setTimeout() yields (${countST(vRunLoop)}) than the container (${countST(cRunLoop)}) — a hot-path yield regressed (perf!)`);
 
+// The kernel tree is NOT curated: sdk/src/vendor/kernel/** must be a strict
+// byte-identical mirror of nano/kernel/** (specs/nano/node-host-engine.md §14).
+// Any divergence means "re-copy from nano", never "patch the vendor".
+function walkFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walkFiles(p));
+    else out.push(p);
+  }
+  return out;
+}
+if (existsSync(KERNEL_SRC)) {
+  const srcFiles = walkFiles(KERNEL_SRC).map((p) => relative(KERNEL_SRC, p)).sort();
+  const vendorFiles = existsSync(KERNEL_VENDOR)
+    ? walkFiles(KERNEL_VENDOR).map((p) => relative(KERNEL_VENDOR, p)).sort()
+    : [];
+  for (const f of srcFiles) {
+    if (!vendorFiles.includes(f)) {
+      problems.push(`kernel mirror is missing ${f} — cp -R nano/kernel/ src/vendor/kernel/`);
+    } else if (
+      readFileSync(join(KERNEL_SRC, f), "utf8") !== readFileSync(join(KERNEL_VENDOR, f), "utf8")
+    ) {
+      problems.push(`kernel/${f} DIFFERS from nano/kernel/${f} — re-copy (the kernel mirror is byte-identical, never curated)`);
+    }
+  }
+  for (const f of vendorFiles) {
+    if (!srcFiles.includes(f)) problems.push(`kernel mirror has stray file ${f} not present in nano/kernel`);
+  }
+}
+
 if (problems.length) {
-  console.error("✗ vendor drift detected (sdk/src/vendor/nanovm.mjs vs nano/container/nanovm.mjs):\n");
+  console.error("✗ vendor drift detected (sdk/src/vendor vs nano/{container,kernel}):\n");
   for (const p of problems) console.error("  • " + p);
   console.error("\nSee src/vendor/README.md for the reconcile process.");
   process.exit(1);
 }
-console.log(`✓ vendor in sync on shared core (${SHARED_METHODS.join(", ")} + the run-loop yield invariant)`);
+console.log(`✓ vendor in sync on shared core (${SHARED_METHODS.join(", ")} + the run-loop yield invariant + byte-identical kernel mirror)`);
