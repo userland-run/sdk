@@ -35,6 +35,16 @@ const SHARED_METHODS = [
   "_pollConnections",
   "_expectedResponseLength",
   "_resolveConnection",
+  // net bridge seam (K6): stream logic lives in kernel/net/fetch-bridge.mjs;
+  // these are the delegation wrappers + guest-read plumbing that must not drift
+  "setNetwork",
+  "setLlmBridge",
+  "_netFetch",
+  "_doNetFetch",
+  "_serveNetRead",
+  "_netOnClose",
+  "_parkNet",
+  "_httpResp",
 ];
 
 function extractMethod(src, name) {
