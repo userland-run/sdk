@@ -20,6 +20,7 @@
  */
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -70,6 +71,22 @@ for (const a of artifacts) {
   }
   copyFileSync(src, dst);
   log(`copy ${a.dst} ← ${src}`);
+}
+
+// --- 1b. stage the vendored nodert + kernel worker trees at the SITE ROOT ---
+// The e2e is a vite BUILD (flattened chunks), so the nodert worker tree can't
+// sit next to the bundle; nodert-engine.ts resolves it from the origin root
+// (/vendor/...) as its last candidate. Copy dist/vendor/{nodert,kernel} →
+// public/vendor so `engines.node:"nodert"` boots in the browser (K9-browser).
+{
+  const distVendor = join(here, "../dist/vendor");
+  const outVendor = join(publicDir, "vendor");
+  if (existsSync(distVendor)) {
+    cpSync(distVendor, outVendor, { recursive: true });
+    log("copy vendor/{nodert,kernel} ← dist/vendor (site-root worker tree for nodert)");
+  } else {
+    console.warn("[sync-fixtures] dist/vendor missing — run `npm run build` first; nodert e2e will skip");
+  }
 }
 
 // --- 2. build the offline signed catalog (busybox as the demo app) ---

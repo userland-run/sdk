@@ -39,7 +39,13 @@ export interface NodertLoadConfig {
 // URL at runtime. Assembled from parts so the bundler can't statically resolve
 // (and therefore can't try to bundle) them.
 const NODERT_SUBPATH = ["vendor", "nodert", "src", "host"].join("/");
-const CANDIDATE_PREFIXES = ["../", "./"]; // source layout, then dist layout
+// Resolution order: source layout (src/node → ../vendor), dist layout
+// (dist/index.js → ./vendor), then the SITE ROOT (/vendor) — the last is for a
+// bundler-built browser build where the vendored worker tree can't sit next to
+// the flattened chunk and is instead served at the origin root (staged by the
+// consumer, e.g. the e2e's e2e:fixtures step). Under Node the "/" candidate
+// resolves to a nonexistent filesystem-root path and is skipped.
+const CANDIDATE_PREFIXES = ["../", "./", "/"];
 
 async function importFromCandidates<T>(file: string): Promise<T> {
   let lastErr: unknown = null;

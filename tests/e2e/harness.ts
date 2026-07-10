@@ -41,6 +41,8 @@ interface BootOpts {
   scripting?: boolean;
   /** Override guest RAM (MB). */
   ramMB?: number;
+  /** Engine selection for nano.node() (spec §14): vm | nodert | auto + pins. */
+  engines?: { node?: "vm" | "nodert" | "auto"; routing?: Record<string, "vm" | "nodert"> };
 }
 
 function resolveFixture(key: string | undefined, fallback: string): string {
@@ -66,6 +68,7 @@ async function boot(opts: BootOpts = {}) {
   if (opts.ramMB != null) config.ramMB = opts.ramMB;
   else if (!opts.node && !opts.overlay) config.ramMB = 512;
   if (opts.scripting) config.scripting = { wasm: await fetchBytes(FIX.boa) };
+  if (opts.engines) config.engines = opts.engines;
 
   return NanoSDK.createNano(config as Parameters<typeof NanoSDK.createNano>[0]);
 }
