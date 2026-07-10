@@ -23,7 +23,8 @@ import { NodeRuntime } from "../node/node-runtime";
 import { createLocalEngine, loadBoaRuntime, type ScriptVmDriver } from "../scripting/script-engine";
 import { Catalog, type CatalogOptions, type BundleInstallResult } from "../catalog/catalog";
 import type { InstallOptions, Manifest } from "../catalog/types";
-import { loadNodertEngine, isRuntimeUnavailable, type NodertEngine } from "../node/nodert-engine";
+import { manifestKind } from "../catalog/types";
+import { loadNodertEngine, loadWasiServiceRunner, isRuntimeUnavailable, type NodertEngine } from "../node/nodert-engine";
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {
@@ -298,14 +299,40 @@ export class Nano implements ShellHost, ConnectionInjector {
    * byte is checked against the bundled catalog key before it touches MemFS
    * (spec §7.4). Returns the installed app's verified manifest.
    *
+   * A `kind:"wasm-service"` app additionally auto-registers with the Kernel
+   * service registry (W-3), so it is immediately reachable over the `svc.*` bus
+   * (not PATH) — no separate wiring step.
+   *
    * ```ts
    * await nano.installApp("ripgrep");                 // eager
    * await nano.installApp("ripgrep@14.1.0", { lazy: true });
    * await nano.run("rg --version");
    * ```
    */
-  installApp(ref: string, opts?: InstallOptions): Promise<Manifest> {
-    return this.catalog().install(this.fs, ref, opts);
+  async installApp(ref: string, opts?: InstallOptions): Promise<Manifest> {
+    const manifest = await this.catalog().install(this.fs, ref, opts);
+    if (manifestKind(manifest) === "wasm-service") await this.registerWasmService(manifest);
+    return manifest;
+  }
+
+  /**
+   * Register an installed wasm-service module with the Kernel service registry
+   * (W-3). Reads the .wasm from the VFS and wraps it via the vendored WASI
+   * service runner. Returns the unregister fn, or throws if the runtime isn't
+   * reachable in this build.
+   */
+  async registerWasmService(manifest: Manifest, opts?: { methods?: string[] }): Promise<() => void> {
+    const file = manifest.files.find((f) => f.path.endsWith(".wasm")) ?? manifest.files[0];
+    if (!file) throw new Error(`nano-sdk: wasm-service '${manifest.name}' has no files to register`);
+    const bytes = this.fs.readFile(file.path);
+    if (!bytes) throw new Error(`nano-sdk: wasm-service '${manifest.name}' file ${file.path} not readable`);
+    const { registerWasmServiceFromManifest } = await loadWasiServiceRunner();
+    return registerWasmServiceFromManifest(
+      (this.raw as unknown as { _kernel: unknown })._kernel,
+      manifest,
+      bytes,
+      opts,
+    ) as () => void;
   }
 
   /**

@@ -97,3 +97,21 @@ export async function loadNodertEngine(
 export function isRuntimeUnavailable(e: unknown): boolean {
   return !!e && typeof e === "object" && (e as { code?: string }).code === "ERR_NODERT_RUNTIME_UNAVAILABLE";
 }
+
+let cachedWasiSvcMod: Promise<{ registerWasmServiceFromManifest: Function; createWasiService: Function }> | null = null;
+
+/**
+ * Load the vendored WASI service runner (W-3) — the seam that lets a catalog
+ * kind:"wasm-service" module register as a `svc.*` Kernel Service. Same
+ * runtime-resolved loading as {@link loadNodertEngine} (never bundled).
+ */
+export async function loadWasiServiceRunner(): Promise<{
+  registerWasmServiceFromManifest: (kernel: unknown, manifest: unknown, wasmBytes: Uint8Array, opts?: unknown) => unknown;
+  createWasiService: Function;
+}> {
+  cachedWasiSvcMod ??= importFromCandidates("wasi-service.mjs");
+  return cachedWasiSvcMod as Promise<{
+    registerWasmServiceFromManifest: (kernel: unknown, manifest: unknown, wasmBytes: Uint8Array, opts?: unknown) => unknown;
+    createWasiService: Function;
+  }>;
+}
