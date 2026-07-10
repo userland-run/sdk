@@ -23,6 +23,7 @@ import { NodeRuntime } from "../node/node-runtime";
 import { createLocalEngine, loadBoaRuntime, type ScriptVmDriver } from "../scripting/script-engine";
 import { Catalog, type CatalogOptions, type BundleInstallResult } from "../catalog/catalog";
 import type { InstallOptions, Manifest } from "../catalog/types";
+import { loadNodertEngine, isRuntimeUnavailable, type NodertEngine } from "../node/nodert-engine";
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {
@@ -78,6 +79,8 @@ export class Nano implements ShellHost, ConnectionInjector {
   /** Engine backing node() and per-program tier pins (spec §14). */
   private nodeEngine: "vm" | "nodert" | "auto" = "vm";
   private nodeRouting: Record<string, "vm" | "nodert"> = {};
+  /** Lazily-loaded vendored nodert engine bound to the shared Kernel (K9). */
+  private nodertEngine: Promise<NodertEngine> | null = null;
 
   private constructor(raw: NanoVM) {
     this.raw = raw;
@@ -133,23 +136,63 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   /**
    * Run node with an explicit argv, on the engine chosen by {@link NanoConfig.engines}
-   * (spec §14). The default `"vm"` runs the RISC-V node ELF (today's behavior).
-   * `"nodert"`/`"auto"`, or a `routing` pin to `"nodert"`, require the
-   * host-engine runtime; until it is wired into this build they throw a
-   * documented `ERR_NODERT_UNWIRED` rather than silently running on the VM.
+   * (spec §14). `"vm"` (default) runs the RISC-V node ELF. `"nodert"` runs on
+   * the host JS engine (JIT speed) over the shared Kernel/VFS. `"auto"` runs on
+   * nodert and falls back to the VM on a documented `ERR_NODERT_UNSUPPORTED`
+   * (or if the nodert runtime isn't reachable in this build). A `routing` pin
+   * forces a specific program to a tier.
    */
-  node(args: string[], opts?: ExecOptions): Promise<ExecResult> {
+  async node(args: string[], opts?: ExecOptions): Promise<ExecResult> {
     const engine = this.resolveNodeEngine(args);
-    if (engine !== "vm") {
-      const err = new Error(
-        `nano-sdk: engine "${engine}" for node() needs the host-engine (nodert) runtime, ` +
-          "which is not wired into this SDK build. Use engines.node:\"vm\" (the default), " +
-          "or run the nodert tier directly via @userland-run/nodert. See spec §14.",
-      );
-      (err as { code?: string }).code = "ERR_NODERT_UNWIRED";
-      return Promise.reject(err);
+    if (engine === "vm") return this.vmNode(args, opts);
+
+    let nodert: NodertEngine;
+    try {
+      nodert = await this.getNodertEngine();
+    } catch (e) {
+      // The host-engine runtime isn't reachable (e.g. a bundled build without
+      // the copied vendor tree). "auto" degrades to the VM; explicit "nodert"
+      // surfaces the documented error.
+      if (engine === "auto" && isRuntimeUnavailable(e)) return this.vmNode(args, opts);
+      throw e;
     }
+
+    // nodert wants the full argv INCLUDING "node" so pins can inspect the entry.
+    // ExecOptions streams a single combined channel (onData); tap both nodert
+    // streams into it, decoding the raw bytes.
+    const dec = new TextDecoder();
+    const onData = opts?.onData;
+    const r = await nodert.node(["node", ...args], {
+      engine,
+      onStdout: onData ? (b: Uint8Array) => onData(dec.decode(b)) : undefined,
+      onStderr: onData ? (b: Uint8Array) => onData(dec.decode(b)) : undefined,
+    });
+    // ExecResult.stdout is the combined stream (the VM merges the two).
+    return { exitCode: r.exitCode, stdout: r.stdout + (r.stderr ?? "") };
+  }
+
+  /** The VM node path (the RISC-V ELF). Also the nodert `auto` fallback. */
+  private vmNode(args: string[], opts?: ExecOptions): Promise<ExecResult> {
     return this.raw.node(...args, toRuntimeOpts(opts, NODE_DEFAULT_MAX_STEPS));
+  }
+
+  /**
+   * Lazily load + cache the vendored nodert engine, bound to the VM's shared
+   * Kernel (so both tiers see one VFS). `vmRun` is the VM node path, used for
+   * the engine selector's `auto` → VM fallback on ERR_NODERT_UNSUPPORTED.
+   */
+  private getNodertEngine(): Promise<NodertEngine> {
+    this.nodertEngine ??= loadNodertEngine((this.raw as unknown as { _kernel: unknown })._kernel, {
+      engine: this.nodeEngine,
+      routing: this.nodeRouting,
+      vmRun: async (argv: string[]) => {
+        // argv includes "node"; the VM path takes the args after it. The VM
+        // merges stdout+stderr into ExecResult.stdout.
+        const res = await this.vmNode(argv.slice(1));
+        return { exitCode: res.exitCode, stdout: res.stdout, stderr: "", signal: null };
+      },
+    });
+    return this.nodertEngine;
   }
 
   /**

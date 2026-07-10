@@ -22,6 +22,12 @@ const CONTAINER = join(here, "..", "..", "nano", "container", "nanovm.mjs");
 const VENDOR = join(here, "..", "src", "vendor", "nanovm.mjs");
 const KERNEL_SRC = join(here, "..", "..", "nano", "kernel");
 const KERNEL_VENDOR = join(here, "..", "src", "vendor", "kernel");
+// nodert runtime mirror (K9): the runtime subtrees are byte-identical, like the
+// kernel. Only the runtime is vendored (src/ vendor/ fixtures/) — never test/,
+// tools/, or spike/.
+const NODERT_SRC = join(here, "..", "..", "nano", "nodert");
+const NODERT_VENDOR = join(here, "..", "src", "vendor", "nodert");
+const NODERT_SUBTREES = ["src", "vendor", "fixtures"];
 
 // Methods that are pure mechanism — they must be byte-identical (modulo comments
 // + whitespace) between the container and the vendor.
@@ -130,10 +136,34 @@ if (existsSync(KERNEL_SRC)) {
   }
 }
 
+// The nodert runtime mirror (K9): sdk/src/vendor/nodert/{src,vendor,fixtures}
+// must be a strict byte-identical mirror of nano/nodert/{src,vendor,fixtures}.
+// The node-lib bundle is binary (brotli), so compare bytes, not text.
+if (existsSync(NODERT_SRC)) {
+  const bytesEqual = (a, b) => {
+    const x = readFileSync(a), y = readFileSync(b);
+    return x.length === y.length && x.equals(y);
+  };
+  for (const sub of NODERT_SUBTREES) {
+    const srcRoot = join(NODERT_SRC, sub);
+    const venRoot = join(NODERT_VENDOR, sub);
+    if (!existsSync(srcRoot)) continue;
+    const srcFiles = walkFiles(srcRoot).map((p) => relative(srcRoot, p)).sort();
+    const venFiles = existsSync(venRoot) ? walkFiles(venRoot).map((p) => relative(venRoot, p)).sort() : [];
+    for (const f of srcFiles) {
+      if (!venFiles.includes(f)) problems.push(`nodert mirror is missing ${sub}/${f} — cp -R nano/nodert/{src,vendor,fixtures} src/vendor/nodert/`);
+      else if (!bytesEqual(join(srcRoot, f), join(venRoot, f))) problems.push(`nodert/${sub}/${f} DIFFERS from nano/nodert/${sub}/${f} — re-copy (the nodert mirror is byte-identical, never curated)`);
+    }
+    for (const f of venFiles) {
+      if (!srcFiles.includes(f)) problems.push(`nodert mirror has stray file ${sub}/${f} not present in nano/nodert`);
+    }
+  }
+}
+
 if (problems.length) {
   console.error("✗ vendor drift detected (sdk/src/vendor vs nano/{container,kernel}):\n");
   for (const p of problems) console.error("  • " + p);
   console.error("\nSee src/vendor/README.md for the reconcile process.");
   process.exit(1);
 }
-console.log(`✓ vendor in sync on shared core (${SHARED_METHODS.join(", ")} + the run-loop yield invariant + byte-identical kernel mirror)`);
+console.log(`✓ vendor in sync on shared core (${SHARED_METHODS.join(", ")} + the run-loop yield invariant + byte-identical kernel & nodert mirrors)`);

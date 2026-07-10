@@ -29,6 +29,10 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   clean: true,
+  // K9: the nodert host-engine runtime can't be flattened into the bundle
+  // (workers + a node-lib blob loaded at runtime). Copy the vendored worker
+  // trees next to dist so nodert-engine.ts resolves dist/vendor/{nodert,kernel}.
+  onSuccess: "node scripts/copy-vendor-dist.mjs",
   // The vendored .mjs runtime + the terminal's UI deps (codemirror/lucide) are
   // bundled in; nothing is left external.
   noExternal: [/.*/],
