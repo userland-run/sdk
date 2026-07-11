@@ -78,8 +78,8 @@ export class Nano implements ShellHost, ConnectionInjector {
   private scriptingWasm?: BinarySource;
   private boaRuntime: BoaRuntime | null = null;
   /** Engine backing node() and per-program tier pins (spec §14). */
-  private nodeEngine: "vm" | "nodert" | "auto" = "vm";
-  private nodeRouting: Record<string, "vm" | "nodert"> = {};
+  private nodeEngine: "vm" | "host" | "auto" = "vm";
+  private nodeRouting: Record<string, "vm" | "host"> = {};
   /** Lazily-loaded vendored nodert engine bound to the shared Kernel (K9). */
   private nodertEngine: Promise<NodertEngine> | null = null;
 
@@ -137,9 +137,9 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   /**
    * Run node with an explicit argv, on the engine chosen by {@link NanoConfig.engines}
-   * (spec §14). `"vm"` (default) runs the RISC-V node ELF. `"nodert"` runs on
+   * (spec §14). `"vm"` (default) runs the RISC-V node ELF. `"host"` runs on
    * the host JS engine (JIT speed) over the shared Kernel/VFS. `"auto"` runs on
-   * nodert and falls back to the VM on a documented `ERR_NODERT_UNSUPPORTED`
+   * nodert and falls back to the VM on a documented `ERR_NODE_HOST_UNSUPPORTED`
    * (or if the nodert runtime isn't reachable in this build). A `routing` pin
    * forces a specific program to a tier.
    */
@@ -152,7 +152,7 @@ export class Nano implements ShellHost, ConnectionInjector {
       nodert = await this.getNodertEngine();
     } catch (e) {
       // The host-engine runtime isn't reachable (e.g. a bundled build without
-      // the copied vendor tree). "auto" degrades to the VM; explicit "nodert"
+      // the copied vendor tree). "auto" degrades to the VM; explicit "host"
       // surfaces the documented error.
       if (engine === "auto" && isRuntimeUnavailable(e)) return this.vmNode(args, opts);
       throw e;
@@ -180,7 +180,7 @@ export class Nano implements ShellHost, ConnectionInjector {
   /**
    * Lazily load + cache the vendored nodert engine, bound to the VM's shared
    * Kernel (so both tiers see one VFS). `vmRun` is the VM node path, used for
-   * the engine selector's `auto` → VM fallback on ERR_NODERT_UNSUPPORTED.
+   * the engine selector's `auto` → VM fallback on ERR_NODE_HOST_UNSUPPORTED.
    */
   private getNodertEngine(): Promise<NodertEngine> {
     this.nodertEngine ??= loadNodertEngine((this.raw as unknown as { _kernel: unknown })._kernel, {
@@ -201,7 +201,7 @@ export class Nano implements ShellHost, ConnectionInjector {
    * (argv0) or entry-bin basename wins; otherwise the configured default.
    * Pure — safe for embedders to call for introspection.
    */
-  resolveNodeEngine(args: string[]): "vm" | "nodert" | "auto" {
+  resolveNodeEngine(args: string[]): "vm" | "host" | "auto" {
     for (const key of nodeEngineKeys(args)) {
       const pinned = this.nodeRouting[key];
       if (pinned) return pinned;

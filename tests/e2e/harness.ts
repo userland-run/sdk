@@ -42,7 +42,7 @@ interface BootOpts {
   /** Override guest RAM (MB). */
   ramMB?: number;
   /** Engine selection for nano.node() (spec §14): vm | nodert | auto + pins. */
-  engines?: { node?: "vm" | "nodert" | "auto"; routing?: Record<string, "vm" | "nodert"> };
+  engines?: { node?: "vm" | "host" | "auto"; routing?: Record<string, "vm" | "host"> };
 }
 
 function resolveFixture(key: string | undefined, fallback: string): string {

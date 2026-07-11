@@ -35,18 +35,18 @@ async function freshKernel() {
 
 test("vendored nodert runs a program on the host engine", async () => {
   const k = await freshKernel();
-  const eng = createNodeEngine(k, { engine: "nodert" });
+  const eng = createNodeEngine(k, { engine: "host" });
   const r = await eng.node(["node", "-e", 'process.stdout.write("host-engine:" + (6*7))'], { timeoutMs: 15000 });
   assert.equal(r.stdout, "host-engine:42");
   assert.equal(r.exitCode, 0);
-  assert.equal(r.engine, "nodert");
+  assert.equal(r.engine, "host");
 });
 
 test("vendored nodert shares the Kernel VFS (cross-tier file handoff)", async () => {
   const k = await freshKernel();
   // A file placed in the shared VFS by the host is visible to the nodert guest.
   k.vfs.rootMem.createFile("/data.txt", "SHARED-VFS-OK");
-  const eng = createNodeEngine(k, { engine: "nodert" });
+  const eng = createNodeEngine(k, { engine: "host" });
   const src = 'const fs=require("fs"); process.stdout.write(fs.readFileSync("/data.txt","utf8"))';
   const r = await eng.node(["node", "-e", src], { timeoutMs: 15000 });
   assert.equal(r.stdout, "SHARED-VFS-OK");
@@ -54,19 +54,19 @@ test("vendored nodert shares the Kernel VFS (cross-tier file handoff)", async ()
 
 test("vendored nodert: a guest file written is visible back in the Kernel VFS", async () => {
   const k = await freshKernel();
-  const eng = createNodeEngine(k, { engine: "nodert" });
+  const eng = createNodeEngine(k, { engine: "host" });
   const src = 'require("fs").writeFileSync("/out.txt","FROM-GUEST"); process.stdout.write("wrote")';
   const r = await eng.node(["node", "-e", src], { timeoutMs: 15000 });
   assert.equal(r.stdout, "wrote");
   assert.equal(new TextDecoder().decode(k.vfs.rootMem.resolve("/out.txt").data), "FROM-GUEST");
 });
 
-test("vendored engine 'auto' falls back to a wired vmRun on ERR_NODERT_UNSUPPORTED", async () => {
+test("vendored engine 'auto' falls back to a wired vmRun on ERR_NODE_HOST_UNSUPPORTED", async () => {
   const k = await freshKernel();
   let vmCalled = 0;
   const vmRun = async (argv) => { vmCalled++; return { exitCode: 0, stdout: "VM:" + argv.slice(1).join(" "), stderr: "", signal: null }; };
   const eng = createNodeEngine(k, { engine: "auto", vmRun });
-  const src = 'process.stderr.write("ERR_NODERT_UNSUPPORTED"); process.exit(1)';
+  const src = 'process.stderr.write("ERR_NODE_HOST_UNSUPPORTED"); process.exit(1)';
   const r = await eng.node(["node", "-e", src], { timeoutMs: 15000 });
   assert.equal(r.engine, "vm");
   assert.ok(r.fellBack);
@@ -95,7 +95,7 @@ test("Nano.node default 'vm' calls the VM path (unchanged)", async () => {
 
 test("Nano.node 'nodert' runs on the host engine via dist/vendor/nodert", async () => {
   const k = await freshKernel();
-  const n = fakeNano("nodert", {}, k, async () => { throw new Error("VM must not be used"); });
+  const n = fakeNano("host", {}, k, async () => { throw new Error("VM must not be used"); });
   const r = await n.node(["-e", 'process.stdout.write("dist-nodert:" + (2+3))']);
   assert.equal(r.stdout, "dist-nodert:5");
   assert.equal(r.exitCode, 0);
@@ -112,7 +112,7 @@ test("Nano.node 'auto' runs on nodert and returns combined output", async () => 
 test("Nano.node routing pin forces a program to the VM", async () => {
   const k = await freshKernel();
   let vmCalled = 0;
-  const n = fakeNano("nodert", { jest: "vm" }, k, async () => { vmCalled++; return { exitCode: 0, stdout: "VM-JEST" }; });
+  const n = fakeNano("host", { jest: "vm" }, k, async () => { vmCalled++; return { exitCode: 0, stdout: "VM-JEST" }; });
   const r = await n.node(["node_modules/.bin/jest", "--ci"]);
   assert.equal(r.stdout, "VM-JEST");
   assert.equal(vmCalled, 1);

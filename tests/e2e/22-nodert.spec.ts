@@ -23,9 +23,9 @@ test.beforeEach(async ({ page }) => {
 test("nodert runs node on the host JS engine — no ELF [feat:sdk.engines.nodert]", async ({ page }) => {
   test.setTimeout(minutes(3));
   const r = await page.evaluate(async () => {
-    // No image.node → the emulator has no node binary; engines.node:"nodert"
+    // No image.node → the emulator has no node binary; engines.node:"host"
     // runs the program on the browser's JS engine. Output PROVES nodert ran.
-    const nano = await (window as Record<string, any>).boot({ engines: { node: "nodert" } });
+    const nano = await (window as Record<string, any>).boot({ engines: { node: "host" } });
     try {
       const evald = await nano.node(["-e", "process.stdout.write('nodert:' + (6 * 7))"]);
       nano.fs.writeFile("/app.js", "const dbl = (n) => n * 2;\nconsole.log('file-' + dbl(21));\n");

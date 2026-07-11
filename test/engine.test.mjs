@@ -28,9 +28,9 @@ test("default engine is vm; resolveNodeEngine echoes it", () => {
 });
 
 test("routing pin resolves via the entry-bin basename", () => {
-  const n = withPolicy("nodert", { jest: "vm" });
+  const n = withPolicy("host", { jest: "vm" });
   assert.equal(n.resolveNodeEngine(["node_modules/.bin/jest", "--ci"]), "vm");
-  assert.equal(n.resolveNodeEngine(["app.js"]), "nodert"); // unpinned → default
+  assert.equal(n.resolveNodeEngine(["app.js"]), "host"); // unpinned → default
 });
 
 test("inline eval has no entry, so a pin doesn't apply", () => {
@@ -40,13 +40,13 @@ test("inline eval has no entry, so a pin doesn't apply", () => {
 });
 
 test("flags are skipped when finding the entry", () => {
-  const n = withPolicy("vm", { tsc: "nodert" });
-  assert.equal(n.resolveNodeEngine(["--max-old-space-size=512", "node_modules/typescript/bin/tsc"]), "nodert");
+  const n = withPolicy("vm", { tsc: "host" });
+  assert.equal(n.resolveNodeEngine(["--max-old-space-size=512", "node_modules/typescript/bin/tsc"]), "host");
 });
 
 test("a routing pin to vm overrides a nodert default (keeps contextify tools on the VM)", () => {
-  const n = withPolicy("nodert", { jest: "vm", "node-gyp": "vm" });
+  const n = withPolicy("host", { jest: "vm", "node-gyp": "vm" });
   assert.equal(n.resolveNodeEngine(["node_modules/.bin/jest"]), "vm");
   assert.equal(n.resolveNodeEngine(["node-gyp", "rebuild"]), "vm");
-  assert.equal(n.resolveNodeEngine(["app.js"]), "nodert"); // unpinned → default
+  assert.equal(n.resolveNodeEngine(["app.js"]), "host"); // unpinned → default
 });

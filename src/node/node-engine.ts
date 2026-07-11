@@ -4,7 +4,7 @@
 
 // src/node/nodert-engine.ts — lazily load the vendored nodert runtime and bind
 // it to a Kernel (spec §14, K9). This is the seam that makes
-// createNano({ engines: { node: "nodert" | "auto" } }) run Node on the host JS
+// createNano({ engines: { node: "host" | "auto" } }) run Node on the host JS
 // engine instead of the RISC-V emulator.
 //
 // The nodert runtime is a tree of .mjs workers + a node-lib bundle that CANNOT
@@ -18,7 +18,7 @@
 //
 // If neither layout resolves (a bundled build without the copied vendor tree),
 // the load throws; callers decide policy: "auto" falls back to the VM, explicit
-// "nodert" surfaces ERR_NODERT_RUNTIME_UNAVAILABLE.
+// "host" surfaces ERR_NODE_HOST_RUNTIME_UNAVAILABLE.
 
 /** Minimal shape of the vendored createNodeEngine return we consume. */
 export interface NodertEngine {
@@ -30,8 +30,8 @@ export interface NodertEngine {
 }
 
 export interface NodertLoadConfig {
-  engine?: "vm" | "nodert" | "auto";
-  routing?: Record<string, "vm" | "nodert">;
+  engine?: "vm" | "host" | "auto";
+  routing?: Record<string, "vm" | "host">;
   vmRun?: (argv: string[], opts: Record<string, unknown>) => Promise<unknown>;
 }
 
@@ -65,7 +65,7 @@ async function importFromCandidates<T>(subpath: string, file: string): Promise<T
       "It ships as a vendored worker tree (src/vendor/runners/node); a bundled dist needs " +
       "that tree copied alongside (dist/vendor/runners/node). See src/node/nodert-engine.ts.",
   );
-  (err as { code?: string; cause?: unknown }).code = "ERR_NODERT_RUNTIME_UNAVAILABLE";
+  (err as { code?: string; cause?: unknown }).code = "ERR_NODE_HOST_RUNTIME_UNAVAILABLE";
   (err as { cause?: unknown }).cause = lastErr;
   throw err;
 }
@@ -104,7 +104,7 @@ export async function loadNodertEngine(
 
 /** True if the error is the documented "runtime not in this build" signal. */
 export function isRuntimeUnavailable(e: unknown): boolean {
-  return !!e && typeof e === "object" && (e as { code?: string }).code === "ERR_NODERT_RUNTIME_UNAVAILABLE";
+  return !!e && typeof e === "object" && (e as { code?: string }).code === "ERR_NODE_HOST_RUNTIME_UNAVAILABLE";
 }
 
 let cachedWasiSvcMod: Promise<{ registerWasmServiceFromManifest: Function; createWasiService: Function }> | null = null;
