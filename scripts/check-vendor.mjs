@@ -28,6 +28,16 @@ const KERNEL_VENDOR = join(here, "..", "src", "vendor", "kernel");
 const NODERT_SRC = join(here, "..", "..", "nano", "runners", "node");
 const NODERT_VENDOR = join(here, "..", "src", "vendor", "runners", "node");
 const NODERT_SUBTREES = ["src", "vendor", "fixtures"];
+// The wasm runner (runners/wasm) is vendored the same way — only its runtime src.
+const RUNNER_MIRRORS = [
+  { name: "node runner", src: NODERT_SRC, vendor: NODERT_VENDOR, subtrees: NODERT_SUBTREES },
+  {
+    name: "wasm runner",
+    src: join(here, "..", "..", "nano", "runners", "wasm"),
+    vendor: join(here, "..", "src", "vendor", "runners", "wasm"),
+    subtrees: ["src"],
+  },
+];
 
 // Methods that are pure mechanism — they must be byte-identical (modulo comments
 // + whitespace) between the container and the vendor.
@@ -139,26 +149,29 @@ if (existsSync(KERNEL_SRC)) {
   }
 }
 
-// The nodert runtime mirror (K9): sdk/src/vendor/nodert/{src,vendor,fixtures}
-// must be a strict byte-identical mirror of nano/runners/node/{src,vendor,fixtures}.
-// The node-lib bundle is binary (brotli), so compare bytes, not text.
-if (existsSync(NODERT_SRC)) {
-  const bytesEqual = (a, b) => {
-    const x = readFileSync(a), y = readFileSync(b);
-    return x.length === y.length && x.equals(y);
-  };
-  for (const sub of NODERT_SUBTREES) {
-    const srcRoot = join(NODERT_SRC, sub);
-    const venRoot = join(NODERT_VENDOR, sub);
+// The runner mirrors (K9): each runner's vendored subtrees must be a strict
+// byte-identical mirror of nano/runners/<name>/<subtree>. The node-lib bundle is
+// binary (brotli), so compare bytes, not text.
+const bytesEqual = (a, b) => {
+  const x = readFileSync(a), y = readFileSync(b);
+  return x.length === y.length && x.equals(y);
+};
+for (const { name, src, vendor: venDir, subtrees } of RUNNER_MIRRORS) {
+  if (!existsSync(src)) continue;
+  const rel = relative(join(here, "..", ".."), src); // e.g. nano/runners/node
+  const venRel = relative(join(here, ".."), venDir); // e.g. src/vendor/runners/node
+  for (const sub of subtrees) {
+    const srcRoot = join(src, sub);
+    const venRoot = join(venDir, sub);
     if (!existsSync(srcRoot)) continue;
     const srcFiles = walkFiles(srcRoot).map((p) => relative(srcRoot, p)).sort();
     const venFiles = existsSync(venRoot) ? walkFiles(venRoot).map((p) => relative(venRoot, p)).sort() : [];
     for (const f of srcFiles) {
-      if (!venFiles.includes(f)) problems.push(`nodert mirror is missing ${sub}/${f} — cp -R nano/runners/node/{src,vendor,fixtures} src/vendor/runners/node/`);
-      else if (!bytesEqual(join(srcRoot, f), join(venRoot, f))) problems.push(`nodert/${sub}/${f} DIFFERS from nano/runners/node/${sub}/${f} — re-copy (the node runner mirror is byte-identical, never curated)`);
+      if (!venFiles.includes(f)) problems.push(`${name} mirror is missing ${sub}/${f} — cp -R ${rel}/${sub} ${venRel}/`);
+      else if (!bytesEqual(join(srcRoot, f), join(venRoot, f))) problems.push(`${name} ${sub}/${f} DIFFERS from ${rel}/${sub}/${f} — re-copy (byte-identical, never curated)`);
     }
     for (const f of venFiles) {
-      if (!srcFiles.includes(f)) problems.push(`nodert mirror has stray file ${sub}/${f} not present in nano/runners/node`);
+      if (!srcFiles.includes(f)) problems.push(`${name} mirror has stray file ${sub}/${f} not present in ${rel}`);
     }
   }
 }

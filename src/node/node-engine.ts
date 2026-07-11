@@ -39,6 +39,9 @@ export interface NodertLoadConfig {
 // URL at runtime. Assembled from parts so the bundler can't statically resolve
 // (and therefore can't try to bundle) them.
 const NODERT_SUBPATH = ["vendor", "runners", "node", "src", "host"].join("/");
+// The wasm tier is its own runner (runners/wasm); the WASI service runner lives
+// there, resolved the same runtime-computed way so it's never bundled.
+const WASM_SUBPATH = ["vendor", "runners", "wasm", "src"].join("/");
 // Resolution order: source layout (src/node → ../vendor), dist layout
 // (dist/index.js → ./vendor), then the SITE ROOT (/vendor) — the last is for a
 // bundler-built browser build where the vendored worker tree can't sit next to
@@ -47,11 +50,11 @@ const NODERT_SUBPATH = ["vendor", "runners", "node", "src", "host"].join("/");
 // resolves to a nonexistent filesystem-root path and is skipped.
 const CANDIDATE_PREFIXES = ["../", "./", "/"];
 
-async function importFromCandidates<T>(file: string): Promise<T> {
+async function importFromCandidates<T>(subpath: string, file: string): Promise<T> {
   let lastErr: unknown = null;
   for (const prefix of CANDIDATE_PREFIXES) {
     try {
-      const spec = new URL(prefix + NODERT_SUBPATH + "/" + file, import.meta.url).href;
+      const spec = new URL(prefix + subpath + "/" + file, import.meta.url).href;
       return (await import(/* @vite-ignore */ spec)) as T;
     } catch (e) {
       lastErr = e;
@@ -80,8 +83,8 @@ export async function loadNodertEngine(
   kernel: unknown,
   cfg: NodertLoadConfig,
 ): Promise<NodertEngine> {
-  cachedEngineMod ??= importFromCandidates<{ createNodeEngine: Function }>("engine.mjs");
-  cachedDelegateMod ??= importFromCandidates<{ registerNodertDelegate: Function }>("delegate.mjs");
+  cachedEngineMod ??= importFromCandidates<{ createNodeEngine: Function }>(NODERT_SUBPATH, "engine.mjs");
+  cachedDelegateMod ??= importFromCandidates<{ registerNodertDelegate: Function }>(NODERT_SUBPATH, "delegate.mjs");
   const [{ createNodeEngine }, { registerNodertDelegate }] = await Promise.all([
     cachedEngineMod,
     cachedDelegateMod,
@@ -115,7 +118,7 @@ export async function loadWasiServiceRunner(): Promise<{
   registerWasmServiceFromManifest: (kernel: unknown, manifest: unknown, wasmBytes: Uint8Array, opts?: unknown) => unknown;
   createWasiService: Function;
 }> {
-  cachedWasiSvcMod ??= importFromCandidates("wasi-service.mjs");
+  cachedWasiSvcMod ??= importFromCandidates(WASM_SUBPATH, "wasi-service.mjs");
   return cachedWasiSvcMod as Promise<{
     registerWasmServiceFromManifest: (kernel: unknown, manifest: unknown, wasmBytes: Uint8Array, opts?: unknown) => unknown;
     createWasiService: Function;
