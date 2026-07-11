@@ -18,7 +18,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const CONTAINER = join(here, "..", "..", "nano", "container", "nanovm.mjs");
+const CONTAINER = join(here, "..", "..", "nano", "runners", "riscv", "host", "nanovm.mjs");
 const VENDOR = join(here, "..", "src", "vendor", "nanovm.mjs");
 const KERNEL_SRC = join(here, "..", "..", "nano", "kernel");
 const KERNEL_VENDOR = join(here, "..", "src", "vendor", "kernel");
