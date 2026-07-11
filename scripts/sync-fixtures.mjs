@@ -52,7 +52,7 @@ const artifacts = [
   { dst: "nano.wasm", env: "NANO_SLIM_WASM", src: join(nanoDir, "wasm/nano.wasm") },
   { dst: "nano.busybox.wasm", env: "NANO_WASM", src: join(nanoDir, "wasm/nano.busybox.wasm") },
   { dst: "boa.wasm", env: "NANO_BOA", src: join(nanoDir, "wasm/boa.wasm") },
-  { dst: "node", env: "NANO_NODE", src: join(nanoDir, "images/node") },
+  { dst: "node", env: "NANO_NODE", src: join(nanoDir, "runners/riscv/images/node") },
   { dst: "nano-sw.js", env: "NANO_SW", src: join(here, "../static/nano-sw.js") },
 ];
 
@@ -90,7 +90,7 @@ for (const a of artifacts) {
 }
 
 // --- 2. build the offline signed catalog (busybox as the demo app) ---
-const busyboxSrc = process.env.NANO_BUSYBOX_ELF ?? join(nanoDir, "images/busybox");
+const busyboxSrc = process.env.NANO_BUSYBOX_ELF ?? join(nanoDir, "runners/riscv/images/busybox");
 if (!existsSync(busyboxSrc)) {
   console.warn(`[sync-fixtures] MISSING busybox ELF for the catalog fixture: ${busyboxSrc}`);
   missing++;
@@ -110,7 +110,7 @@ function buildDevtoolsOverlay() {
     return;
   }
   const catalogDir = process.env.CATALOG_DIR ?? join(here, "../../catalog");
-  const nodeElf = process.env.NANO_NODE ?? join(nanoDir, "images/node");
+  const nodeElf = process.env.NANO_NODE ?? join(nanoDir, "runners/riscv/images/node");
   const tools = ["typescript", "eslint", "prettier"];
   const sources = tools.map((t) => join(catalogDir, "recipes", t, "out/usr/local"));
   const missingSrc = [nodeElf, ...sources].filter((p) => !existsSync(p));
