@@ -15,7 +15,7 @@ const workerEntry = new URL("../boot/worker-entry.mjs", import.meta.url).href;
 
 /**
  * Run a Node program on the nodert tier.
- * @param {import("../../../kernel/kernel.mjs").Kernel} kernel
+ * @param {import("../../../../kernel/kernel.mjs").Kernel} kernel
  * @param {{ argv: string[], source?: string, entryPath?: string, env?: object,
  *           cwd?: string, caps?: object, ppid?: number,
  *           onStdout?: (b: Uint8Array) => void, onStderr?: (b: Uint8Array) => void,

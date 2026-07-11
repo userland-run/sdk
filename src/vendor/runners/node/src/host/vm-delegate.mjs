@@ -19,7 +19,7 @@
 import { splitStatements, tokenize, expand, basename as shBasename, BUILTINS, runBuiltin } from "./shell-delegate.mjs";
 
 /**
- * @param {import("../../../kernel/kernel.mjs").Kernel} kernel
+ * @param {import("../../../../kernel/kernel.mjs").Kernel} kernel
  * @param {any} vm  a NanoVM constructed with { kernel } so it shares the VFS
  * @param {{ maxSteps?: number }} [opts]
  * @returns {() => void} unregister
@@ -109,7 +109,7 @@ function shQuote(s) { return /[\s"'$`\\]/.test(s) ? `'${String(s).replace(/'/g, 
 /**
  * Convenience: create a NanoVM sharing `kernel`, install the busybox ELF into
  * the shared VFS, and register it as the vm delegate. Returns { vm, unregister }.
- * @param {import("../../../kernel/kernel.mjs").Kernel} kernel
+ * @param {import("../../../../kernel/kernel.mjs").Kernel} kernel
  * @param {{ NanoVM: any, wasm: Uint8Array, busybox?: Uint8Array, ramMB?: number }} cfg
  */
 async function createVmDelegate(kernel, cfg) {

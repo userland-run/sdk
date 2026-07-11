@@ -33,7 +33,7 @@ const REAL_UPSTREAM = new Set([
 
 /**
  * @param {{ init: object, sync: (op: string, args?: object) => object,
- *           async: import("../../../kernel/bus/client.mjs").BusClient,
+ *           async: import("../../../../kernel/bus/client.mjs").BusClient,
  *           fixtures: object }} ctx
  */
 async function boot(ctx) {

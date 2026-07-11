@@ -20,9 +20,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Kernel, registerBuiltinServices } from "../src/vendor/kernel/index.mjs";
-import { createNodeEngine } from "../src/vendor/nodert/src/host/engine.mjs";
-import { loadLibBundle } from "../src/vendor/nodert/src/host/lib-loader.mjs";
-import { runNode } from "../src/vendor/nodert/src/host/runtime.mjs";
+import { createNodeEngine } from "../src/vendor/runners/node/src/host/engine.mjs";
+import { loadLibBundle } from "../src/vendor/runners/node/src/host/lib-loader.mjs";
+import { runNode } from "../src/vendor/runners/node/src/host/runtime.mjs";
 import { Nano } from "../dist/index.js";
 
 async function freshKernel() {

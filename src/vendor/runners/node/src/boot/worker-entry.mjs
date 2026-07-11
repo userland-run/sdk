@@ -8,8 +8,8 @@
 // worker_threads Worker under Node (tests) or a Web Worker in the browser.
 
 import { workerContext, isNode } from "../platform.mjs";
-import { BusClient } from "../../../kernel/bus/client.mjs";
-import { SyncCaller } from "../../../kernel/bus/sab-channel.mjs";
+import { BusClient } from "../../../../kernel/bus/client.mjs";
+import { SyncCaller } from "../../../../kernel/bus/sab-channel.mjs";
 import { boot } from "./boot.mjs";
 
 const ctx = await workerContext();

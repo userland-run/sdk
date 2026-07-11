@@ -11,8 +11,8 @@
 // be flattened into the single tsup dist bundle (workers need standalone entry
 // files; the bundle is read at runtime). So it is NOT statically imported —
 // it is loaded at runtime by URL, from either layout:
-//   • source  (terminal / source tests): src/node/ → ../vendor/nodert/…
-//   • dist    (published SDK):            dist/index.js → ./vendor/nodert/…
+//   • source  (terminal / source tests): src/node/ → ../vendor/runners/node/…
+//   • dist    (published SDK):            dist/index.js → ./vendor/runners/node/…
 // The specifier is assembled from parts so esbuild leaves it as a native
 // runtime import (it never tries to bundle node:fs / the worker graph).
 //
@@ -38,7 +38,7 @@ export interface NodertLoadConfig {
 // Candidate module specifiers for the vendored engine, relative to THIS module's
 // URL at runtime. Assembled from parts so the bundler can't statically resolve
 // (and therefore can't try to bundle) them.
-const NODERT_SUBPATH = ["vendor", "nodert", "src", "host"].join("/");
+const NODERT_SUBPATH = ["vendor", "runners", "node", "src", "host"].join("/");
 // Resolution order: source layout (src/node → ../vendor), dist layout
 // (dist/index.js → ./vendor), then the SITE ROOT (/vendor) — the last is for a
 // bundler-built browser build where the vendored worker tree can't sit next to
@@ -59,8 +59,8 @@ async function importFromCandidates<T>(file: string): Promise<T> {
   }
   const err = new Error(
     "nano-sdk: the nodert host-engine runtime is not reachable in this build. " +
-      "It ships as a vendored worker tree (src/vendor/nodert); a bundled dist needs " +
-      "that tree copied alongside (dist/vendor/nodert). See src/node/nodert-engine.ts.",
+      "It ships as a vendored worker tree (src/vendor/runners/node); a bundled dist needs " +
+      "that tree copied alongside (dist/vendor/runners/node). See src/node/nodert-engine.ts.",
   );
   (err as { code?: string; cause?: unknown }).code = "ERR_NODERT_RUNTIME_UNAVAILABLE";
   (err as { cause?: unknown }).cause = lastErr;

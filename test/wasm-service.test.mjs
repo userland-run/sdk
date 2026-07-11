@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { Kernel, registerBuiltinServices } from "../src/vendor/kernel/index.mjs";
 import { Nano } from "../dist/index.js";
 
-const fixtureUrl = new URL("../../nano/nodert/test/wasm-fixtures.mjs", import.meta.url);
+const fixtureUrl = new URL("../../nano/runners/node/test/wasm-fixtures.mjs", import.meta.url);
 const skip = existsSync(fileURLToPath(fixtureUrl)) ? false : "sibling nano fixture absent";
 
 // A Map-backed fs satisfying both InstallTarget.writeFile and Vfs.readFile.

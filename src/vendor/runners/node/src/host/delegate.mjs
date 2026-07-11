@@ -15,7 +15,7 @@
 import { runNode } from "./runtime.mjs";
 
 /**
- * @param {import("../../../kernel/kernel.mjs").Kernel} kernel
+ * @param {import("../../../../kernel/kernel.mjs").Kernel} kernel
  * @param {{ services?: string[] }} [opts]
  * @returns {() => void} unregister
  */

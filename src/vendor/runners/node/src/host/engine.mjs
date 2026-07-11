@@ -30,7 +30,7 @@ import { runNode } from "./runtime.mjs";
 const UNSUPPORTED = "ERR_NODERT_UNSUPPORTED";
 
 /**
- * @param {import("../../../kernel/kernel.mjs").Kernel} kernel
+ * @param {import("../../../../kernel/kernel.mjs").Kernel} kernel
  * @param {{
  *   engine?: "vm"|"nodert"|"auto",
  *   pins?: Record<string, "vm"|"nodert">,

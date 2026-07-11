@@ -25,8 +25,8 @@ const KERNEL_VENDOR = join(here, "..", "src", "vendor", "kernel");
 // nodert runtime mirror (K9): the runtime subtrees are byte-identical, like the
 // kernel. Only the runtime is vendored (src/ vendor/ fixtures/) — never test/,
 // tools/, or spike/.
-const NODERT_SRC = join(here, "..", "..", "nano", "nodert");
-const NODERT_VENDOR = join(here, "..", "src", "vendor", "nodert");
+const NODERT_SRC = join(here, "..", "..", "nano", "runners", "node");
+const NODERT_VENDOR = join(here, "..", "src", "vendor", "runners", "node");
 const NODERT_SUBTREES = ["src", "vendor", "fixtures"];
 
 // Methods that are pure mechanism — they must be byte-identical (modulo comments
@@ -118,9 +118,12 @@ function walkFiles(dir) {
   return out;
 }
 if (existsSync(KERNEL_SRC)) {
-  const srcFiles = walkFiles(KERNEL_SRC).map((p) => relative(KERNEL_SRC, p)).sort();
+  // Only the RUNTIME kernel is vendored — never test/ or bench/ (those live in
+  // nano/kernel/{test,bench} beside the code but are not shipped in the SDK).
+  const runtimeOnly = (f) => !f.startsWith("test/") && !f.startsWith("bench/");
+  const srcFiles = walkFiles(KERNEL_SRC).map((p) => relative(KERNEL_SRC, p)).filter(runtimeOnly).sort();
   const vendorFiles = existsSync(KERNEL_VENDOR)
-    ? walkFiles(KERNEL_VENDOR).map((p) => relative(KERNEL_VENDOR, p)).sort()
+    ? walkFiles(KERNEL_VENDOR).map((p) => relative(KERNEL_VENDOR, p)).filter(runtimeOnly).sort()
     : [];
   for (const f of srcFiles) {
     if (!vendorFiles.includes(f)) {
@@ -137,7 +140,7 @@ if (existsSync(KERNEL_SRC)) {
 }
 
 // The nodert runtime mirror (K9): sdk/src/vendor/nodert/{src,vendor,fixtures}
-// must be a strict byte-identical mirror of nano/nodert/{src,vendor,fixtures}.
+// must be a strict byte-identical mirror of nano/runners/node/{src,vendor,fixtures}.
 // The node-lib bundle is binary (brotli), so compare bytes, not text.
 if (existsSync(NODERT_SRC)) {
   const bytesEqual = (a, b) => {
@@ -151,11 +154,11 @@ if (existsSync(NODERT_SRC)) {
     const srcFiles = walkFiles(srcRoot).map((p) => relative(srcRoot, p)).sort();
     const venFiles = existsSync(venRoot) ? walkFiles(venRoot).map((p) => relative(venRoot, p)).sort() : [];
     for (const f of srcFiles) {
-      if (!venFiles.includes(f)) problems.push(`nodert mirror is missing ${sub}/${f} — cp -R nano/nodert/{src,vendor,fixtures} src/vendor/nodert/`);
-      else if (!bytesEqual(join(srcRoot, f), join(venRoot, f))) problems.push(`nodert/${sub}/${f} DIFFERS from nano/nodert/${sub}/${f} — re-copy (the nodert mirror is byte-identical, never curated)`);
+      if (!venFiles.includes(f)) problems.push(`nodert mirror is missing ${sub}/${f} — cp -R nano/runners/node/{src,vendor,fixtures} src/vendor/runners/node/`);
+      else if (!bytesEqual(join(srcRoot, f), join(venRoot, f))) problems.push(`nodert/${sub}/${f} DIFFERS from nano/runners/node/${sub}/${f} — re-copy (the node runner mirror is byte-identical, never curated)`);
     }
     for (const f of venFiles) {
-      if (!srcFiles.includes(f)) problems.push(`nodert mirror has stray file ${sub}/${f} not present in nano/nodert`);
+      if (!srcFiles.includes(f)) problems.push(`nodert mirror has stray file ${sub}/${f} not present in nano/runners/node`);
     }
   }
 }

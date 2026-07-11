@@ -27,7 +27,7 @@ async function compileCached(bytes, key) {
 function moduleCacheStats() { return { size: moduleCache.size, keys: [...moduleCache.keys()] }; }
 
 /**
- * @param {import("../../../kernel/kernel.mjs").Kernel} kernel
+ * @param {import("../../../../kernel/kernel.mjs").Kernel} kernel
  * @param {{ wasmBytes: Uint8Array, argv: string[], env?: object, cwd?: string,
  *           caps?: object, ppid?: number, preopens?: Array<{guestPath,hostPath,readonly}>,
  *           onStdout?: (b)=>void, timeoutMs?: number, _reuseProc?, _stdout?, _stderr?, _stdin? }} opts

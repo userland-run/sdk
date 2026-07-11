@@ -18,7 +18,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const srcVendor = join(here, "..", "src", "vendor");
 const distVendor = join(here, "..", "dist", "vendor");
 
-for (const tree of ["nodert", "kernel"]) {
+for (const tree of ["runners/node", "kernel"]) {
   const from = join(srcVendor, tree);
   const to = join(distVendor, tree);
   if (!existsSync(from)) {
@@ -28,4 +28,4 @@ for (const tree of ["nodert", "kernel"]) {
   if (existsSync(to)) rmSync(to, { recursive: true, force: true });
   cpSync(from, to, { recursive: true });
 }
-console.error("copy-vendor-dist: dist/vendor/{nodert,kernel} refreshed");
+console.error("copy-vendor-dist: dist/vendor/{runners/node,kernel} refreshed");

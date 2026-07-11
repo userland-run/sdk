@@ -24,7 +24,7 @@ import { createLocalEngine, loadBoaRuntime, type ScriptVmDriver } from "../scrip
 import { Catalog, type CatalogOptions, type BundleInstallResult } from "../catalog/catalog";
 import type { InstallOptions, Manifest } from "../catalog/types";
 import { manifestKind } from "../catalog/types";
-import { loadNodertEngine, loadWasiServiceRunner, isRuntimeUnavailable, type NodertEngine } from "../node/nodert-engine";
+import { loadNodertEngine, loadWasiServiceRunner, isRuntimeUnavailable, type NodertEngine } from "../node/node-engine";
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {

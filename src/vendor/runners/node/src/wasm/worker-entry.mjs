@@ -7,8 +7,8 @@
 // wasip1 module with the WASI shim bound to the Kernel, and calls _start.
 
 import { workerContext, spawnWorker } from "../platform.mjs";
-import { BusClient } from "../../../kernel/bus/client.mjs";
-import { SyncCaller } from "../../../kernel/bus/sab-channel.mjs";
+import { BusClient } from "../../../../kernel/bus/client.mjs";
+import { SyncCaller } from "../../../../kernel/bus/sab-channel.mjs";
 import { createWasiShim } from "./wasi-shim.mjs";
 
 const threadEntry = new URL("./thread-entry.mjs", import.meta.url).href;
