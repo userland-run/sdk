@@ -111,7 +111,7 @@ leading `script ` line to the engine, e.g. `script "nano.fs.list('/').map(e => e
 ## Consumer setup checklist
 
 1. Serve cross-origin isolated, **or** register `nano-sw.js` (exported as `./service-worker`).
-2. Host `nano.wasm` (and `images/busybox`, `images/node`, `build/devenv.tar.gz` for the small build).
+2. Host `nano.wasm` (and `runners/riscv/images/busybox`, `runners/riscv/images/node`, `build/devenv.tar.gz` for the small build).
 3. For serve mode, copy `nano-sw.js` to your public root and pass its URL to `ServeBridge`.
 
 The escape hatch: `nano.raw` is the underlying `NanoVM` instance. The SDK never hides capability.

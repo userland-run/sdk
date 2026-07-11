@@ -1,7 +1,7 @@
 # Vendored NanoVM runtime
 
 `nanovm.mjs` (+ `nanovm.d.mts`, `memfs.mjs`) is a **curated copy** of the browser
-VM module from the `nano` repo (`nano/container/nanovm.mjs`). The SDK vendors it so
+VM module from the `nano` repo (`nano/runners/riscv/host/nanovm.mjs`). The SDK vendors it so
 it ships as one self-contained package instead of depending on the core repo's
 layout.
 
