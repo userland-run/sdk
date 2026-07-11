@@ -3,8 +3,8 @@ dist/
 # The vendored nodert runtime (K9) mirrors upstream cjs-module-lexer, whose
 # published tree includes a dist/ dir — re-include it so the byte-identical
 # vendor mirror is complete (the global dist/ rule above would hide it).
-!src/vendor/nodert/vendor/cjs-module-lexer/dist/
-!src/vendor/nodert/vendor/cjs-module-lexer/dist/**
+!src/vendor/runners/node/vendor/cjs-module-lexer/dist/
+!src/vendor/runners/node/vendor/cjs-module-lexer/dist/**
 *.tsbuildinfo
 *.log
 .DS_Store
