@@ -50,20 +50,37 @@ const WASM_SUBPATH = ["vendor", "runners", "wasm", "src"].join("/");
 // resolves to a nonexistent filesystem-root path and is skipped.
 const CANDIDATE_PREFIXES = ["../", "./", "/"];
 
-async function importFromCandidates<T>(subpath: string, file: string): Promise<T> {
+// A bundler-proof native dynamic import. Building `import()` via `new Function`
+// hides it from webpack/Vite/esbuild static analysis, so it stays a NATIVE
+// runtime import in every bundler (magic comments like @vite-ignore /
+// webpackIgnore are unreliable — Next.js's minifier strips them). The vendored
+// worker tree is then loaded from disk (dist/vendor) or the site root (/vendor),
+// never bundled. Indirect eval needs no `unsafe-eval` beyond what a normal app allows.
+const nativeImport = new Function("u", "return import(u)") as (u: string) => Promise<unknown>;
+
+async function importFromCandidates<T>(subpath: string, file: string, what = "nodert host-engine"): Promise<T> {
   let lastErr: unknown = null;
   for (const prefix of CANDIDATE_PREFIXES) {
     try {
-      const spec = new URL(prefix + subpath + "/" + file, import.meta.url).href;
-      return (await import(/* @vite-ignore */ spec)) as T;
+      // Site-root candidate ("/"): pass a BARE root-relative specifier so the
+      // runtime resolves it against the page/worker origin. Under webpack,
+      // import.meta.url is the module's file path (not an http URL), so
+      // new URL("/…", import.meta.url) would build a bad base — this avoids it.
+      // The dist-adjacent candidates ("../", "./") resolve against import.meta.url,
+      // which IS a valid URL in Node/Vite where those layouts apply.
+      const spec = prefix === "/"
+        ? "/" + subpath + "/" + file
+        : new URL(prefix + subpath + "/" + file, import.meta.url).href;
+      return (await nativeImport(spec)) as T;
     } catch (e) {
       lastErr = e;
     }
   }
   const err = new Error(
-    "nano-sdk: the nodert host-engine runtime is not reachable in this build. " +
-      "It ships as a vendored worker tree (src/vendor/runners/node); a bundled dist needs " +
-      "that tree copied alongside (dist/vendor/runners/node). See src/node/nodert-engine.ts.",
+    `nano-sdk: the ${what} runtime is not reachable in this build. ` +
+      `It ships as a vendored worker tree (src/${subpath}); a bundled dist needs ` +
+      `that tree copied alongside (dist/${subpath}) or served at the site root (/${subpath}). ` +
+      "See src/node/node-engine.ts.",
   );
   (err as { code?: string; cause?: unknown }).code = "ERR_NODE_HOST_RUNTIME_UNAVAILABLE";
   (err as { cause?: unknown }).cause = lastErr;
@@ -105,6 +122,37 @@ export async function loadNodertEngine(
 /** True if the error is the documented "runtime not in this build" signal. */
 export function isRuntimeUnavailable(e: unknown): boolean {
   return !!e && typeof e === "object" && (e as { code?: string }).code === "ERR_NODE_HOST_RUNTIME_UNAVAILABLE";
+}
+
+/** The vendored wasm-app runner: registers named wasm32-wasip1 commands on the
+ *  Kernel's `wasm-app` spawn tier (`register(name, bytes)` pins `name` → wasm-app). */
+export interface WasmAppRunner {
+  register(name: string, wasmBytes: Uint8Array): () => void;
+  apps: Map<string, Uint8Array>;
+}
+
+let cachedWasmAppMod: Promise<{ createWasmAppRunner: (kernel: unknown) => WasmAppRunner }> | null = null;
+
+/**
+ * Load the vendored wasm runner (runners/wasm) and return a `WasmAppRunner`
+ * bound to `kernel` — the seam that lets `installApp` register a
+ * `kind:"wasm-app"` catalog module (ripgrep, photon, …) as a PATH command that
+ * runs on the host wasm engine. The runner registers the `wasm-app` spawn
+ * delegate once; it is cached on the kernel so its command registry is shared.
+ * Same runtime-resolved, never-bundled loading as {@link loadNodertEngine}.
+ */
+export async function loadWasmAppRunner(kernel: unknown): Promise<WasmAppRunner> {
+  const k = kernel as { __wasmAppRunner?: WasmAppRunner };
+  if (k.__wasmAppRunner) return k.__wasmAppRunner;
+  cachedWasmAppMod ??= importFromCandidates<{ createWasmAppRunner: (kernel: unknown) => WasmAppRunner }>(
+    WASM_SUBPATH,
+    "wasm-app.mjs",
+    "wasm-app",
+  );
+  const { createWasmAppRunner } = await cachedWasmAppMod;
+  const runner = createWasmAppRunner(kernel);
+  k.__wasmAppRunner = runner;
+  return runner;
 }
 
 let cachedWasiSvcMod: Promise<{ registerWasmServiceFromManifest: Function; createWasiService: Function }> | null = null;

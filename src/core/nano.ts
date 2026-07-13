@@ -24,7 +24,7 @@ import { createLocalEngine, loadBoaRuntime, type ScriptVmDriver } from "../scrip
 import { Catalog, type CatalogOptions, type BundleInstallResult } from "../catalog/catalog";
 import type { InstallOptions, Manifest } from "../catalog/types";
 import { manifestKind } from "../catalog/types";
-import { loadNodertEngine, loadWasiServiceRunner, isRuntimeUnavailable, type NodertEngine } from "../node/node-engine";
+import { loadNodertEngine, loadWasiServiceRunner, loadWasmAppRunner, isRuntimeUnavailable, type NodertEngine } from "../node/node-engine";
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {
@@ -82,6 +82,8 @@ export class Nano implements ShellHost, ConnectionInjector {
   private nodeRouting: Record<string, "vm" | "host"> = {};
   /** Lazily-loaded vendored nodert engine bound to the shared Kernel (K9). */
   private nodertEngine: Promise<NodertEngine> | null = null;
+  /** Cached parent process for direct wasm-app spawns (see {@link execWasmApp}). */
+  private _wasmAppParent: { caps: unknown } | null = null;
 
   private constructor(raw: NanoVM) {
     this.raw = raw;
@@ -301,7 +303,9 @@ export class Nano implements ShellHost, ConnectionInjector {
    *
    * A `kind:"wasm-service"` app additionally auto-registers with the Kernel
    * service registry (W-3), so it is immediately reachable over the `svc.*` bus
-   * (not PATH) — no separate wiring step.
+   * (not PATH) — no separate wiring step. A `kind:"wasm-app"` app (a
+   * wasm32-wasip1 command, e.g. `photon`) auto-registers on the `wasm-app` tier,
+   * so `nano.run("photon …")` runs it on the host wasm engine.
    *
    * ```ts
    * await nano.installApp("ripgrep");                 // eager
@@ -311,7 +315,9 @@ export class Nano implements ShellHost, ConnectionInjector {
    */
   async installApp(ref: string, opts?: InstallOptions): Promise<Manifest> {
     const manifest = await this.catalog().install(this.fs, ref, opts);
-    if (manifestKind(manifest) === "wasm-service") await this.registerWasmService(manifest);
+    const kind = manifestKind(manifest);
+    if (kind === "wasm-service") await this.registerWasmService(manifest);
+    else if (kind === "wasm-app") await this.registerWasmAppFromManifest(manifest);
     return manifest;
   }
 
@@ -333,6 +339,68 @@ export class Nano implements ShellHost, ConnectionInjector {
       bytes,
       opts,
     ) as () => void;
+  }
+
+  /**
+   * Register a `kind:"wasm-app"` catalog module as a PATH command on the
+   * Kernel's `wasm-app` tier. Reads the installed `.wasm` from the VFS and pins
+   * the manifest's entrypoint name to the host wasm engine, so
+   * `nano.run("photon …")` runs on the wasm runner. Called automatically by
+   * {@link installApp} for wasm-app manifests.
+   */
+  async registerWasmAppFromManifest(manifest: Manifest): Promise<() => void> {
+    const file = manifest.files.find((f) => f.path.endsWith(".wasm")) ?? manifest.files[0];
+    if (!file) throw new Error(`nano-sdk: wasm-app '${manifest.name}' has no files to register`);
+    const bytes = this.fs.readFile(file.path);
+    if (!bytes) throw new Error(`nano-sdk: wasm-app '${manifest.name}' file ${file.path} not readable`);
+    const argv = manifest.entrypoint?.argv ?? [];
+    const name = argv[0] ?? file.path.slice(file.path.lastIndexOf("/") + 1).replace(/\.wasm$/, "");
+    return this.registerWasmApp(name, bytes);
+  }
+
+  /**
+   * Register a wasm32-wasip1 module as a named PATH command on the `wasm-app`
+   * tier from raw bytes (no catalog needed). `nano.run([name, …])` then runs it
+   * on the host wasm engine. Returns an unregister fn. Throws if the vendored
+   * wasm runner isn't reachable in this build (serve `dist/vendor/runners/wasm`
+   * — see the consumer setup checklist).
+   */
+  async registerWasmApp(name: string, wasmBytes: Uint8Array): Promise<() => void> {
+    const runner = await loadWasmAppRunner((this.raw as unknown as { _kernel: unknown })._kernel);
+    return runner.register(name, wasmBytes);
+  }
+
+  /**
+   * Run a registered wasm-app command directly on the `wasm-app` tier (host wasm
+   * engine), bypassing the guest shell, with the VM's capabilities. The app sees
+   * `cwd` as its root preopen, so pass paths relative to `cwd` (e.g. seed
+   * `${cwd}/in.png` with `fs.writeFile`, run `[name, "in.png", "out.png"]`, then
+   * read `${cwd}/out.png`). Returns the combined result. Binary output must be
+   * written to a file by the app and read back via `fs.readFile` — stdout is
+   * decoded as UTF-8.
+   */
+  async execWasmApp(
+    argv: string[],
+    opts: { cwd?: string; timeoutMs?: number } = {},
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const k = (this.raw as unknown as { _kernel: any })._kernel;
+    const delegate = k.router.delegateFor("wasm-app") as ((req: any) => Promise<any>) | undefined;
+    if (!delegate) {
+      throw new Error("nano-sdk: no wasm-app is registered — call installApp() for a kind:\"wasm-app\" app or registerWasmApp(name, bytes) first");
+    }
+    this._wasmAppParent ??= k.registerProcess({ kind: "wasm", argv: ["nano-wasm-app"] });
+    const parent = this._wasmAppParent as any;
+    const r = (await delegate({
+      parent,
+      argv,
+      cwd: opts.cwd ?? "/",
+      env: {},
+      caps: parent.caps,
+      wait: true,
+      timeoutMs: opts.timeoutMs ?? 60000,
+    })) as { exitCode?: number; stdout?: string; stderr?: string };
+    return { exitCode: r.exitCode ?? 0, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   }
 
   /**

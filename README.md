@@ -1,8 +1,10 @@
 # @userland-run/nano-sdk
 
-A typed, layered TypeScript SDK over [NanoVM](https://github.com/userland-run/nano) — run real
-Linux binaries (BusyBox, Node.js) in the browser. Drive them from code, from your own terminal UI,
-or connect the browser to HTTP apps running inside the VM.
+A typed, layered TypeScript SDK over [NanoVM](https://github.com/userland-run/nano), the multi-runner
+platform — run real Linux binaries (BusyBox, Node.js) in the browser. The RISC-V emulator is the
+default runner; the SDK can also route Node to the **host JS engine** (`engines.node: "host"`) and run
+sandboxed JS on the **Boa** runner. Drive them from code, from your own terminal UI, or connect the
+browser to HTTP apps running inside the VM.
 
 - **Code mode** — write files, run commands, read results.
 - **Terminal mode** — a renderer-agnostic shell engine (cwd/env state, `sh` semantics, node routing).
@@ -166,7 +168,7 @@ This is one repo in the **[userland.run](https://userland.run)** workspace:
 
 | Repo | What it is |
 | ---- | ---------- |
-| [nano](https://github.com/userland-run/nano) | The RV64GC → WASM emulator core this SDK vendors + drives |
+| [nano](https://github.com/userland-run/nano) | The multi-runner platform (RV64GC emulator + node/wasm/boa) this SDK vendors + drives |
 | **[sdk](https://github.com/userland-run/sdk)** | `@userland-run/nano-sdk` — **this repo** |
 | [terminal](https://github.com/userland-run/terminal) | `<nano-terminal>` web component, re-exported at `@userland-run/nano-sdk/terminal` |
 | [catalog](https://github.com/userland-run/catalog) | Signed app marketplace (node, typescript, eslint, …) the SDK installs from |

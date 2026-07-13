@@ -15,6 +15,13 @@ export default defineConfig({
     // The terminal DISPLAY service (UI: <nano-terminal> + createTerminal),
     // bundled from the sibling @userland-run/terminal source.
     terminal: "src/terminal.ts",
+    // The on-device-AI assistant's WebGPU model worker. The terminal source
+    // spawns it via `new Worker(new URL("./local-worker.ts", import.meta.url))`
+    // (Vite's worker syntax); esbuild/tsup leaves that URL verbatim, so we emit
+    // the worker as its own standalone entry (dist/local-worker.js) and the
+    // onSuccess step rewrites terminal.js's `.ts` reference to `.js`. Without
+    // this, a webpack/Next consumer can't resolve "./local-worker.ts".
+    "local-worker": "../terminal/src/assistant/local-worker.ts",
   },
   format: ["esm"],
   target: "es2022",
@@ -32,7 +39,7 @@ export default defineConfig({
   // K9: the nodert host-engine runtime can't be flattened into the bundle
   // (workers + a node-lib blob loaded at runtime). Copy the vendored worker
   // trees next to dist so nodert-engine.ts resolves dist/vendor/{nodert,kernel}.
-  onSuccess: "node scripts/copy-vendor-dist.mjs",
+  onSuccess: "node scripts/copy-vendor-dist.mjs && node scripts/patch-terminal-worker.mjs",
   // The vendored .mjs runtime + the terminal's UI deps (codemirror/lucide) are
   // bundled in; nothing is left external.
   noExternal: [/.*/],

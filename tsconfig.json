@@ -17,5 +17,10 @@
     "noEmit": true
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  // src/terminal.ts is a thin re-export of the sibling terminal package's source
+  // (@userland-run/nano-sdk/terminal). That source is typechecked in the terminal
+  // repo under its own tsconfig (DOM + @webgpu/types, without the SDK's extra-strict
+  // flags like noUncheckedIndexedAccess); re-checking it here under the SDK's config
+  // produces false errors. tsup still bundles it via esbuild. So skip it in typecheck.
+  "exclude": ["node_modules", "dist", "src/terminal.ts"]
 }
