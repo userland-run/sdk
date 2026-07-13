@@ -79,8 +79,29 @@ export interface AppRecipe {
  *                    the service registry, reached over the `svc.*` bus, NOT PATH.
  *   "wasm-component" a WASI-0.2 component (wasi-http, …) — served behind the
  *                    ServeBridge (W-3). Reserved; not yet runnable in this build.
+ *   "node-app"       a JavaScript/TypeScript app run on the HOST Node engine
+ *                    (engines.node:"host") — trusted, near-native. NOT the
+ *                    RISC-V node ELF; distinct from an elf-app that ships node.
+ *   "boa-app"        a sandboxed JavaScript app run by the Boa interpreter
+ *                    (the boa runner) — capability-scoped, no ambient authority.
  */
-export type ArtifactKind = "elf-app" | "wasm-app" | "wasm-service" | "wasm-component";
+export type ArtifactKind =
+  | "elf-app"
+  | "wasm-app"
+  | "wasm-service"
+  | "wasm-component"
+  | "node-app"
+  | "boa-app";
+
+/**
+ * The execution tier (runner) that actually runs an app, derived from its
+ * artifact kind. The catalog + terminal browse UI group and badge apps by this:
+ *   "riscv"  the RISC-V VM (emulated CPU) — elf-app.
+ *   "node"   the host Node engine — node-app.
+ *   "wasm"   the wasm runner (host wasm engine) — wasm-app/service/component.
+ *   "boa"    the Boa sandbox (interpreted JS) — boa-app.
+ */
+export type Tier = "riscv" | "node" | "wasm" | "boa";
 
 /** A signed app manifest (the `.napp`, spec §6.1). */
 export interface Manifest {
@@ -118,11 +139,26 @@ export interface Collection {
   members: string[]; // app names, e.g. ["node", "typescript"]
 }
 
+/** Per-app execution-tier metadata, denormalized into the index so a browse UI
+ *  can group/badge apps by runner without fetching each manifest. */
+export interface AppMeta {
+  /** The runner that executes the app (derived from `kind`). */
+  tier: Tier;
+  /** The artifact kind from the manifest. */
+  kind: ArtifactKind;
+  /** The binary ABI/target (e.g. "riscv64gc-linux-musl", "wasm32-wasip1"). */
+  abi: string;
+}
+
 /** The signed catalog index (spec §7.2). */
 export interface SignedIndex {
   generation: number;
   nano_min_version: string;
   apps: Record<string, string>; // "name@version" -> manifest sha256 (a cas blob)
+  /** Per-app tier/kind/abi, denormalized from the manifests (mirrors `categories`)
+   *  so clients group apps by runner without N manifest fetches. Absent for legacy
+   *  indexes ⇒ treat every app as the "riscv" tier (elf-app). */
+  appMeta?: Record<string, AppMeta>;
   bundles?: Record<string, string>; // "topic-slug" -> bundle manifest sha256
   /** Browse facets: topic-slug -> member app refs (denormalized from `bundles`,
    *  so clients can group apps by category without fetching each bundle). */
@@ -181,4 +217,17 @@ export function manifestKind(manifest: Pick<Manifest, "kind">): ArtifactKind {
 /** True for any wasm tier (app/service/component) — routed off the emulator. */
 export function isWasmKind(kind: ArtifactKind): boolean {
   return kind === "wasm-app" || kind === "wasm-service" || kind === "wasm-component";
+}
+
+/** The execution tier (runner) for an artifact kind. See {@link Tier}. */
+export function kindToTier(kind: ArtifactKind): Tier {
+  if (isWasmKind(kind)) return "wasm";
+  if (kind === "node-app") return "node";
+  if (kind === "boa-app") return "boa";
+  return "riscv"; // elf-app (the default)
+}
+
+/** The execution tier of a manifest, defaulting via its kind ("elf-app" ⇒ riscv). */
+export function manifestTier(manifest: Pick<Manifest, "kind">): Tier {
+  return kindToTier(manifestKind(manifest));
 }

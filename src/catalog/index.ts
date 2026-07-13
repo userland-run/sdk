@@ -17,11 +17,13 @@ export {
 } from "./installer";
 export { verifySigned, sha256Hex, canonicalize, catalogPublicKey, publicKeyFromB64 } from "./crypto";
 export { CATALOG_PUBLIC_KEY_B64 } from "./pubkey";
-export { manifestKind, isWasmKind } from "./types";
+export { manifestKind, isWasmKind, kindToTier, manifestTier } from "./types";
 export type {
   Manifest,
   ManifestFile,
   ArtifactKind,
+  Tier,
+  AppMeta,
   AppRecipe,
   SignedIndex,
   Collection,
