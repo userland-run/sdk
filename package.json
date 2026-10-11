@@ -1,7 +1,7 @@
 {
   "name": "@userland-run/nano-sdk",
-  "version": "0.2.6",
-  "description": "TypeScript SDK for NanoVM — run real Linux binaries (BusyBox, Node.js) in the browser.",
+  "version": "0.2.7",
+  "description": "TypeScript SDK for NanoVM — run real Linux binaries in the browser across four runners: a RISC-V VM (BusyBox, Node.js ELFs), Node on the host JS engine (nodert), WASI wasm apps, and a sandboxed Boa JS engine.",
   "type": "module",
   "license": "MPL-2.0 OR LicenseRef-UEL",
   "author": "Dietmar Rietsch / And The Next GmbH",

@@ -223,6 +223,23 @@ const CALLABLE: Record<string, ReadonlySet<string>> = {
   node: new Set(["warmup", "run", "reset"]),
 };
 
+/**
+ * installApp/installBundle: the client can't send `onProgress` (functions don't
+ * structured-clone), so it registers it as a main-thread callback and passes
+ * `progressCallbackId`; re-create `onProgress` here as a fire-and-forget
+ * reverse-RPC stub.
+ */
+function injectProgress(req: Extract<Req, { kind: "call" }>): void {
+  if (req.target !== "nano" || (req.method !== "installApp" && req.method !== "installBundle")) return;
+  const opts = req.args[1] as Record<string, unknown> | undefined;
+  if (!opts || typeof opts.progressCallbackId !== "number") return;
+  const callbackId = opts.progressCallbackId;
+  delete opts.progressCallbackId;
+  opts.onProgress = (e: unknown): void => {
+    invokeMainCallback(callbackId, [e]).catch(() => undefined);
+  };
+}
+
 /** For streaming calls, splice an onData poster into the trailing options object. */
 function injectStream(req: Extract<Req, { kind: "call" }>): void {
   if (!req.stream) return;
@@ -241,6 +258,7 @@ async function dispatch(
   nodeInst: NodeRuntime,
 ): Promise<unknown> {
   injectStream(req);
+  injectProgress(req);
   const { target, method, args } = req;
 
   let host: object;

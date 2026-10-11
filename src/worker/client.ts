@@ -14,6 +14,8 @@ import type {
   ShellHost,
   ShellOptions,
 } from "../types";
+import type { InstallOptions, Manifest } from "../catalog/types";
+import type { BundleInstallResult } from "../catalog/catalog";
 import type { Req, Res, WorkerTarget } from "./protocol";
 import { Shell } from "../shell/shell";
 
@@ -328,6 +330,68 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   readText(path: string): Promise<string | null> {
     return this.call("nano", "readText", [path]) as Promise<string | null>;
   }
+  /**
+   * Which engine serves a `node(args)` call (`routing` pin, else the configured
+   * default). Pure introspection — mirrors {@link Nano.resolveNodeEngine}.
+   */
+  resolveNodeEngine(args: string[]): Promise<"vm" | "host" | "auto"> {
+    return this.call("nano", "resolveNodeEngine", [args]) as Promise<"vm" | "host" | "auto">;
+  }
+
+  // --- catalog (installer runs in the worker, next to the VM) ---
+
+  /**
+   * Fetch, verify, and install a catalog app into the worker VM's filesystem —
+   * mirrors {@link Nano.installApp} (wasm-app / wasm-service kinds are
+   * auto-registered). `opts.onProgress` stays on the main thread: progress
+   * events are proxied back over the scripting reverse-RPC channel.
+   */
+  installApp(ref: string, opts?: InstallOptions): Promise<Manifest> {
+    return this.callWithProgress("installApp", ref, opts) as Promise<Manifest>;
+  }
+
+  /** Install a whole topic bundle — mirrors {@link Nano.installBundle}. */
+  installBundle(slug: string, opts?: InstallOptions): Promise<BundleInstallResult> {
+    return this.callWithProgress("installBundle", slug, opts) as Promise<BundleInstallResult>;
+  }
+
+  /**
+   * Run a registered wasm-app command on the `wasm-app` tier (host wasm engine)
+   * — mirrors {@link Nano.execWasmApp}. Paths are relative to `opts.cwd`.
+   */
+  execWasmApp(
+    argv: string[],
+    opts?: { cwd?: string; timeoutMs?: number },
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    return this.call("nano", "execWasmApp", [argv, opts ?? {}]) as Promise<{
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    }>;
+  }
+
+  /**
+   * installApp/installBundle with `onProgress` proxied: the function can't be
+   * structured-cloned, so it is registered as a main-thread callback and the
+   * worker re-creates `onProgress` as a reverse-RPC stub (`progressCallbackId`).
+   */
+  private async callWithProgress(
+    method: "installApp" | "installBundle",
+    arg: string,
+    opts?: InstallOptions,
+  ): Promise<unknown> {
+    const { onProgress, ...rest } = opts ?? {};
+    if (!onProgress) return this.call("nano", method, [arg, rest]);
+    const callbackId = this.registerCallback((e) => {
+      onProgress(e as Parameters<typeof onProgress>[0]);
+    });
+    try {
+      return await this.call("nano", method, [arg, { ...rest, progressCallbackId: callbackId }]);
+    } finally {
+      this.unregisterCallback(callbackId);
+    }
+  }
+
   injectConnection(port: number, httpRequest: string | Uint8Array): Promise<Uint8Array> {
     return this.call("server", "injectConnection", [port, httpRequest]) as Promise<Uint8Array>;
   }

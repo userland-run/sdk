@@ -37,7 +37,7 @@ export interface TerminalConfig {
   fontPx?: number;
   /** Service-worker URL backing the preview bridge. Default "/nano-sw.js". */
   serviceWorkerUrl?: string;
-  /** Feature toggles; omitted features use the defaults above. */
+  /** Feature toggles; omitted features default to on (set `false` to disable). */
   features?: TerminalFeatureConfig;
 }
 
@@ -75,10 +75,14 @@ export interface TerminalHandle {
   openFile: (path: string) => void;
   /** Reveal the Preview tab on a port (no-op if preview is disabled). */
   showPreview: (port?: number) => void;
-  /** Tear down the terminal: stops the VM, render loop, timers and listeners. */
-  dispose: () => void;
   /** Re-list the Files panel tree (after external FS changes). */
   refreshFiles: () => void;
+  /**
+   * Tear the terminal down: stop the render loop, timers and observers, remove
+   * listeners, destroy the VM and renderer, and remove the injected scaffold.
+   * Idempotent. `<nano-terminal>` calls it when detached.
+   */
+  dispose: () => void;
 }
 
 /**
@@ -92,13 +96,24 @@ export function createTerminal(
   config?: TerminalConfig,
 ): Promise<TerminalHandle>;
 
-/** The `<nano-terminal>` custom element (Shadow DOM; fully CSS-encapsulated). */
+/**
+ * The `<nano-terminal>` custom element (Shadow DOM; fully CSS-encapsulated).
+ *
+ * Declarative attributes (read once, on connect): `wasm-url`, `service-worker-url`,
+ * `shell-command`, `font-px`, `ram-mb`, and the boolean feature switches
+ * `no-catalog`, `no-palette`, `no-files`, `no-editor`, `no-preview`. The
+ * {@link NanoTerminalElement.config} property overrides attributes.
+ */
 export declare class NanoTerminalElement extends HTMLElement {
   /** Programmatic config; merged over (and overriding) attribute-derived config. */
   config: TerminalConfig;
   /** Resolves to the running {@link TerminalHandle} once booted (null before connect). */
   get ready(): Promise<TerminalHandle> | null;
   connectedCallback(): void;
+  /** Disposes the terminal once the element stays detached (a DOM move keeps the VM). */
+  disconnectedCallback(): void;
+  /** Tear the terminal down now (VM, render loop, timers, listeners). A later re-insert boots a fresh instance. */
+  dispose(): void;
 }
 
 /** Register the `<nano-terminal>` custom element (idempotent). */

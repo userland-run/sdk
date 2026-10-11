@@ -28,9 +28,11 @@ export interface NanoConfig {
   /** Scripting engine (Boa / boa.wasm). Omit to leave scripting unavailable. */
   scripting?: ScriptingConfig;
   /**
-   * Guest RAM in MB. When omitted, auto-sized for Node (~1.8GB; V8 OOMs below
-   * that), keeping guest RAM + the wasm's embedded binaries under the 2GB
-   * linear-memory ceiling. BusyBox-only callers can pass a smaller value.
+   * Guest RAM in MB. When omitted, auto-sized for Node (V8 OOMs below ~1.8GB):
+   * `floor(2000 - wasmMB - 20)`, where `wasmMB` is the size of `image.wasm`
+   * (assumed ~138MB — the bundled build — when it is a URL), keeping guest RAM
+   * + the wasm's embedded binaries under the 2GB linear-memory ceiling.
+   * BusyBox-only callers can pass a smaller value (e.g. 256–512).
    */
   ramMB?: number;
   /** Pre-JIT the interpreter with a no-op run. Default true. */
@@ -46,9 +48,13 @@ export interface NanoConfig {
    * `routing` pins specific programs to a tier regardless of the mode
    * (e.g. `{ jest: "vm" }`) — contextify/addon-heavy tools stay on the emulator.
    *
-   * Default `"vm"`: the emulator serves node until the nodert tier is wired
-   * into this build; `"host"`/`"auto"` throw a documented `ERR_NODE_HOST_UNWIRED`
-   * error when the host-engine runtime is unavailable.
+   * Default `{ node: "vm" }`. The nodert runtime is a vendored worker tree
+   * loaded at runtime (`dist/vendor/runners/node`, or served at the site root
+   * `/vendor/runners/node`). When it can't be loaded (missing tree, or a CSP
+   * without `'unsafe-eval'`), `"host"` rejects with an error whose `code` is
+   * `ERR_NODE_HOST_RUNTIME_UNAVAILABLE` and `"auto"` silently falls back to the
+   * VM. A program nodert can't run (e.g. native addons) fails with
+   * `ERR_NODE_HOST_UNSUPPORTED` on `"host"`; `"auto"` falls back to the VM.
    */
   engines?: EngineConfig;
 }
@@ -57,7 +63,11 @@ export interface NanoConfig {
 export interface EngineConfig {
   /** Engine backing `nano.node()`. Default `"vm"`. */
   node?: "vm" | "host" | "auto";
-  /** Per-program tier pins (S4), e.g. `{ jest: "vm", "node-gyp": "vm" }`. */
+  /**
+   * Per-program tier pins (S4), e.g. `{ jest: "vm", "node-gyp": "vm" }`. Keyed
+   * by the entry script/bin basename; a pin beats `node`. Inline `-e`/`-p` code
+   * has no entry and always uses the default.
+   */
   routing?: Record<string, "vm" | "host">;
 }
 
@@ -135,9 +145,14 @@ export interface ExecOptions {
   onData?: (chunk: string) => void;
   /** Instruction budget. Default 2_000_000 (raised to 2e9 for node). */
   maxSteps?: number;
-  /** Working directory — honored by `node()` (run/shExec start at "/"). */
+  /**
+   * Working directory. Only `node()` honors it (`run`/`exec`/`shExec` start at
+   * "/" — `cd` inside the line instead). On the host engine it is passed
+   * through; on the VM it is applied via an sh wrapper that needs
+   * `/usr/bin/node` in the VFS (with only an embedded node ELF it is ignored).
+   */
   cwd?: string;
-  /** Extra environment variables — honored by `node()`. */
+  /** Extra environment variables. Same rules as {@link ExecOptions.cwd}: `node()` only. */
   env?: Record<string, string>;
 }
 
@@ -240,15 +255,15 @@ export interface NodeRunOptions extends Omit<ExecOptions, "cwd" | "env"> {
  * falls back to the terminal's {@link TerminalConfig} defaults.
  */
 export interface TerminalFeatureConfig {
-  /** Catalog sidebar (searchable, installable app list). */
+  /** Catalog sidebar (searchable, installable app list). Default on. */
   catalog?: boolean;
-  /** ⌘K command palette. */
+  /** ⌘K command palette. Default on. */
   palette?: boolean;
-  /** Files sidebar panel with CRUD on files/folders. */
+  /** Files sidebar panel with CRUD on files/folders. Default on. */
   files?: boolean;
-  /** CodeMirror file editor (opens in the Editor tab). */
+  /** CodeMirror file editor (opens in the Editor tab). Default on. */
   editor?: boolean;
-  /** Server-app preview (iframe over the in-VM HTTP server). */
+  /** Server-app preview (iframe over the in-VM HTTP server). Default on. */
   preview?: boolean | TerminalPreviewConfig;
   /** AI assistant sidebar panel (Chrome Prompt API + optional cloud model). */
   assistant?: boolean;
@@ -302,15 +317,15 @@ export interface TerminalAssistantConfig {
 export interface TerminalConfig {
   /** nano.wasm URL. Default "/nano.wasm". */
   wasmUrl?: string;
-  /** Guest RAM in MB. Default 256. */
+  /** Guest RAM in MB. Default 1800 (V8/Node OOMs below ~1.8 GB). */
   ramMB?: number;
   /** Command booted as the interactive session. Default "sh -i". */
   shellCommand?: string;
-  /** Initial terminal font size in px. */
+  /** Initial terminal font size in px. Default 12. */
   fontPx?: number;
   /** Service-worker URL backing the preview bridge. Default "/nano-sw.js". */
   serviceWorkerUrl?: string;
-  /** Feature toggles; omitted features use the terminal defaults. */
+  /** Feature toggles; omitted features default to on (set `false` to disable). */
   features?: TerminalFeatureConfig;
   /** Assistant wiring (e.g. an optional cloud model). */
   assistant?: TerminalAssistantConfig;
