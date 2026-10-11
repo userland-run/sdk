@@ -233,6 +233,35 @@ await client.resolveNodeEngine(["app.js"]);
   (`setWarmup` / `warmup` / `loadSnapshot` / `restoreRun` / `restoreServe`), and `destroy()` are also
   available.
 
+## Agent tools & WebMCP
+
+Give an LLM agent a Linux sandbox. `@userland-run/nano-sdk/agent` (about 11 KB, no VM runtime inside)
+turns a `Nano` or worker client into capability-scoped tools that any model can call. It also registers
+them with the browser's built-in agent over [WebMCP](https://github.com/webmachinelearning/webmcp).
+
+```ts
+import { createVmTools, exposeWebMcp } from "@userland-run/nano-sdk/agent";
+
+const tools = createVmTools(nano, {
+  fs: "readwrite", // "none" | "readonly" (default) | "readwrite"
+  exec: true,      // run_shell; also node, install, script (all default false)
+  approve: async (call) => confirm(`${call.tool}: ${call.summary}`), // gates every non-read call
+});
+const unregister = exposeWebMcp(tools); // no-op where document.modelContext is missing
+```
+
+- Each tool is `{ name, description, inputSchema, kind, readOnly, execute }`. Map it to Claude or OpenAI
+  tool definitions, an MCP server, or your own loop.
+- `execute` resolves to `{ ok, output, data? }` and never throws. "VM is busy serving" and guest errors
+  come back as text, and output is capped by `maxOutputChars` (default 32,000).
+- Read tools: `list_dir`, `read_file`, `file_exists`, and `list_ports` (main-thread `Nano` only).
+  Opt-in: `write_file` / `make_dir` / `move_path` / `delete_path`, `run_shell`, `run_node`, `install_app`,
+  `run_script` (Boa). `prefix` namespaces the names when you expose several VMs.
+- WebMCP tools carry `readOnlyHint` and `untrustedContentHint`. Treat tool output as untrusted: it can
+  carry prompt injection.
+
+Full guide: <https://userland.run/docs/sdk-agent/>
+
 ## Catalog
 
 Install signed, content-addressed apps from the CDN:

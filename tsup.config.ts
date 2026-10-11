@@ -15,6 +15,8 @@ export default defineConfig({
     // The terminal DISPLAY service (UI: <nano-terminal> + createTerminal),
     // bundled from the sibling @userland-run/terminal source.
     terminal: "src/terminal.ts",
+    // Agent tools + WebMCP adapter (type-only against the core, so it stays tiny).
+    agent: "src/agent/index.ts",
     // The on-device-AI assistant's WebGPU model worker. The terminal source
     // spawns it via `new Worker(new URL("./local-worker.ts", import.meta.url))`
     // (Vite's worker syntax); esbuild/tsup leaves that URL verbatim, so we emit
@@ -29,7 +31,13 @@ export default defineConfig({
   // Types only for the headless entries here; the terminal entry ships a
   // hand-authored types/terminal.d.ts (its source pulls @webgpu/@container
   // ambient types that needn't be threaded through this build).
-  dts: { entry: { index: "src/index.ts", "worker/worker": "src/worker/worker.ts" } },
+  dts: {
+    entry: {
+      index: "src/index.ts",
+      "worker/worker": "src/worker/worker.ts",
+      agent: "src/agent/index.ts",
+    },
+  },
   bundle: true,
   // Each entry is self-contained (no shared chunks) so the worker entry can be
   // loaded standalone via `new Worker(new URL(".../worker", import.meta.url))`.
@@ -49,6 +57,7 @@ export default defineConfig({
     options.alias = {
       ...(options.alias ?? {}),
       "@container/nanovm.mjs": path.resolve(here, "src/vendor/nanovm.mjs"),
+      "@sdk/agent": path.resolve(here, "src/agent/index.ts"),
       "@sdk": path.resolve(here, "src/index.ts"),
     };
   },
