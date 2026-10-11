@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: MPL-2.0 OR LicenseRef-UEL
+# Copyright (C) 2026 And The Next GmbH - https://userland.run
+#
+# Publish @userland-run/nano-sdk to npm via trusted publishing (OIDC): no npm
+# token and no 2FA prompt. Triggered by pushing a `v<version>` tag that matches
+# package.json. npm attaches provenance automatically.
+#
+# One-time setup on npmjs.com → package settings → Trusted Publisher:
+#   GitHub Actions · org `userland-run` · repo `sdk` · workflow `publish.yml`
+#
+# Release:  npm version <x.y.z> && git push --follow-tags
+
+name: publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for npm trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      NANO_RELEASE: ${{ vars.NANO_RELEASE || 'latest' }}
+      NANO_WASM: ${{ github.workspace }}/sdk/.nano-runtime/nano.busybox.wasm
+      NANO_BOA: ${{ github.workspace }}/sdk/.nano-runtime/boa.wasm
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: sdk
+
+      # Sibling checkout: the terminal source the SDK's terminal subpath bundles.
+      - uses: actions/checkout@v4
+        with:
+          repository: userland-run/terminal
+          path: terminal
+
+      # Trusted publishing needs npm >= 11.5.1, which ships with Node 24.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Tag matches package.json version
+        run: |
+          pkg="v$(node -p 'require("./package.json").version')"
+          if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME != package.json $pkg"; exit 1
+          fi
+
+      - name: Install terminal deps (bundled source needs its imports)
+        working-directory: terminal
+        run: npm ci
+
+      - name: Install + build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Fetch nano runtime (busybox + boa)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .nano-runtime
+          if [ "$NANO_RELEASE" = "latest" ]; then
+            gh release download --repo userland-run/nano \
+              --pattern 'nano.busybox.wasm' --pattern 'boa.wasm' --dir .nano-runtime
+          else
+            gh release download "$NANO_RELEASE" --repo userland-run/nano \
+              --pattern 'nano.busybox.wasm' --pattern 'boa.wasm' --dir .nano-runtime
+          fi
+
+      - name: Test
+        run: node --test test/*.test.mjs
+
+      - name: Publish
+        run: npm publish
