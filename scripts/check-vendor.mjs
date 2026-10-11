@@ -61,6 +61,19 @@ const SHARED_METHODS = [
   "_netOnClose",
   "_parkNet",
   "_httpResp",
+  // execve bridge (guest shell → foreign-tier delegate, e.g. a wasm-app): the
+  // run-loop park, stdio bridging, and run() routing must not drift
+  "_doExecve",
+  "_routeForeign",
+  "_runRouted",
+  "_exitGuest",
+  "_killBridged",
+  "_runBridgedExec",
+  "_feedBridgedStdin",
+  "_bridgeWrite",
+  "_consoleBytes",
+  "_consoleText",
+  "_isDevNull",
 ];
 
 function extractMethod(src, name) {

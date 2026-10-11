@@ -164,6 +164,31 @@ export interface ExecResult {
   snapshotReady?: boolean;
 }
 
+/** Options for {@link Nano.execWasmApp} (a registered wasm-app run directly on the wasm tier). */
+export interface WasmAppExecOptions {
+  /** Working directory (default "/"). Relative paths resolve against it; absolute paths work too. */
+  cwd?: string;
+  /** Environment variables for the app (`PWD` is always set to `cwd`). */
+  env?: Record<string, string>;
+  /** Bytes (or UTF-8 text) fed to the app's stdin, then EOF. Without it stdin is EOF immediately. */
+  stdin?: Uint8Array | string;
+  /** Wall-clock limit in ms (default 15 minutes — sized for batch image/PDF jobs). Exit code 124 on timeout. */
+  timeoutMs?: number;
+}
+
+/** Result of {@link Nano.execWasmApp}: decoded text plus the raw (binary-safe) bytes. */
+export interface WasmAppExecResult {
+  exitCode: number;
+  /** stdout decoded as UTF-8. */
+  stdout: string;
+  /** stderr decoded as UTF-8. */
+  stderr: string;
+  /** stdout exactly as written (e.g. an image an app streamed to stdout). */
+  stdoutBytes: Uint8Array;
+  /** stderr exactly as written. */
+  stderrBytes: Uint8Array;
+}
+
 export type DirEntryType = "dir" | "file" | "symlink";
 
 export interface DirEntry {

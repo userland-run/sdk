@@ -26,6 +26,10 @@ export interface RuntimeRunOptions {
   onStdout?: (chunk: string) => void;
   /** Instruction budget. Defaults: 2_000_000 (run), 2_000_000_000 (node/nodeSnapshot). */
   maxSteps?: number;
+  /** run() of a program routed to another tier (e.g. a wasm-app): its working directory (default "/"). */
+  cwd?: string;
+  /** run() of a program routed to another tier: extra environment variables. */
+  env?: Record<string, string>;
 }
 
 export interface RestoreOptions extends RuntimeRunOptions {
@@ -120,6 +124,11 @@ export declare class NanoVM {
   run(command: string, opts?: RuntimeRunOptions): Promise<ExecResult>;
   node(...argsAndOpts: Array<string | RuntimeRunOptions>): Promise<ExecResult>;
   cancelRun(): void;
+  /**
+   * Wall-clock limit (ms) for a foreign-tier program a guest shell exec()s (e.g. a
+   * wasm-app); unset = the tier's default (15 min for wasm-apps).
+   */
+  execTimeoutMs?: number;
   destroy(): void;
 
   // --- snapshots (node fast path) ---

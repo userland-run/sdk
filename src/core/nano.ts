@@ -15,6 +15,8 @@ import type {
   ServerLaunch,
   ShellHost,
   ShellOptions,
+  WasmAppExecOptions,
+  WasmAppExecResult,
 } from "../types";
 import { toRuntimeOpts, NODE_DEFAULT_MAX_STEPS } from "./exec-opts";
 import { resolveImage } from "./images";
@@ -228,7 +230,14 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   // --- execution ---
 
-  /** Raw BusyBox run; whitespace-split argv, no shell parsing (§2.4). */
+  /**
+   * Raw BusyBox run; whitespace-split argv, no shell parsing (§2.4). A program
+   * registered on another tier (e.g. a wasm-app installed from the catalog, such
+   * as `photon`) is routed there: `run("photon in.jpg out.png")` runs it on the
+   * host wasm engine, from "/", with stdout+stderr combined like a VM run.
+   * Inside {@link shExec} lines, such programs are exec'd from the shell with
+   * real pipes/redirects/exit codes.
+   */
   run(command: string, opts?: ExecOptions): Promise<ExecResult> {
     return this.withVmLock(() => this.raw.run(command, toRuntimeOpts(opts)));
   }
@@ -553,16 +562,16 @@ export class Nano implements ShellHost, ConnectionInjector {
   /**
    * Run a registered wasm-app command directly on the `wasm-app` tier (host wasm
    * engine), bypassing the guest shell, with the VM's capabilities. The app sees
-   * `cwd` as its root preopen, so pass paths relative to `cwd` (e.g. seed
-   * `${cwd}/in.png` with `fs.writeFile`, run `[name, "in.png", "out.png"]`, then
-   * read `${cwd}/out.png`). Returns the combined result. Binary output must be
-   * written to a file by the app and read back via `fs.readFile` — stdout is
-   * decoded as UTF-8.
+   * the filesystem like a normal process: relative paths resolve against
+   * `opts.cwd` (default "/") and absolute paths (e.g. `/work/in.jpg`) reach the
+   * VFS root. `stdin` is fed then EOF'd (EOF right away without it); `env` is
+   * passed through (`PWD` = cwd). Returns the decoded text and the raw bytes of
+   * stdout/stderr (binary-safe). Default timeout: 15 minutes (exit 124).
+   *
+   * Shell lines can use the same apps directly — `nano.shExec("photon a.jpg b.png && ls")`
+   * — the guest shell exec()s them with real pipes, redirects and exit codes.
    */
-  async execWasmApp(
-    argv: string[],
-    opts: { cwd?: string; timeoutMs?: number } = {},
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  async execWasmApp(argv: string[], opts: WasmAppExecOptions = {}): Promise<WasmAppExecResult> {
     const k = this.kernel;
     const delegate = k.router.delegateFor("wasm-app");
     if (!delegate) {
@@ -574,12 +583,21 @@ export class Nano implements ShellHost, ConnectionInjector {
       parent,
       argv,
       cwd: opts.cwd ?? "/",
-      env: {},
+      env: { ...(opts.env ?? {}) },
       caps: parent.caps,
       wait: true,
-      timeoutMs: opts.timeoutMs ?? 60000,
-    })) as { exitCode?: number; stdout?: string; stderr?: string };
-    return { exitCode: r.exitCode ?? 0, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+      ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    })) as Partial<WasmAppExecResult>;
+    const enc = new TextEncoder();
+    const stdout = r.stdout ?? "", stderr = r.stderr ?? "";
+    return {
+      exitCode: r.exitCode ?? 0,
+      stdout,
+      stderr,
+      stdoutBytes: r.stdoutBytes ?? enc.encode(stdout),
+      stderrBytes: r.stderrBytes ?? enc.encode(stderr),
+    };
   }
 
   /**

@@ -13,6 +13,8 @@ import type {
   ScriptEngineOptions,
   ShellHost,
   ShellOptions,
+  WasmAppExecOptions,
+  WasmAppExecResult,
 } from "../types";
 import type { InstallOptions, Manifest } from "../catalog/types";
 import type { BundleInstallResult } from "../catalog/catalog";
@@ -359,15 +361,8 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
    * Run a registered wasm-app command on the `wasm-app` tier (host wasm engine)
    * — mirrors {@link Nano.execWasmApp}. Paths are relative to `opts.cwd`.
    */
-  execWasmApp(
-    argv: string[],
-    opts?: { cwd?: string; timeoutMs?: number },
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    return this.call("nano", "execWasmApp", [argv, opts ?? {}]) as Promise<{
-      exitCode: number;
-      stdout: string;
-      stderr: string;
-    }>;
+  execWasmApp(argv: string[], opts?: WasmAppExecOptions): Promise<WasmAppExecResult> {
+    return this.call("nano", "execWasmApp", [argv, opts ?? {}]) as Promise<WasmAppExecResult>;
   }
 
   /**
