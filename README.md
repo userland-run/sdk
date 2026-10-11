@@ -183,6 +183,25 @@ iframe.src = bridge.previewUrl(8080, "/"); // => <sw scope>sw/8080/
 server never exits. It accepts `{ node: [...] }` or `{ command: "sh line" }`. The worker client is
 also a `ConnectionInjector`.
 
+`nano.injectConnection` (which `nano.virtualServer` returns, so use either as the injector) routes
+each request by the Kernel port table. A server that listens on another runner, such as a Node
+server started with `nano.node()` on the host engine (`engines: { node: "host" }`), gets the
+request over a Kernel loopback connection, the same path nodert's `net.connect` uses. Every other
+port goes to the in-VM server. One bridge previews both kinds:
+
+```ts
+const nano = await createNano({ image, engines: { node: "host" } });
+const bridge = await ServeBridge.register({ injector: nano, swUrl: "/nano-sw.js" });
+void nano.node(["-e", 'require("http").createServer((q, s) => s.end("hi")).listen(3000)']);
+iframe.src = bridge.previewUrl(3000); // served by the host-engine server
+nano.listeners(); // => [{ port: 3000, ownerPid, kind: "node" }]
+```
+
+Loopback requests are sent with `Connection: close`, and the response ends when the server closes
+the connection or the `Content-Length` is reached. `listeners()` lists the port table. A VM port
+shows up there only after the VM has served on it. `startServer`'s `stop()` cancels VM runs. A
+host-engine server keeps running until its process exits.
+
 ## Headless
 
 `createHeadless({ wasmUrl?, ramMB?, serviceWorkerUrl? })` gives you the terminal's features without

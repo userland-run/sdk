@@ -26,12 +26,13 @@ import { Catalog, type CatalogOptions, type BundleInstallResult } from "../catal
 import type { InstallOptions, Manifest } from "../catalog/types";
 import { isWasmKind, manifestKind } from "../catalog/types";
 import { loadNodertEngine, loadWasiServiceRunner, loadWasmAppRunner, isRuntimeUnavailable, type NodertEngine } from "../node/node-engine";
+import { injectLoopback, type LoopbackKernel, type PortListener } from "../serve/loopback";
 
 /**
  * The slice of the vendored Kernel the SDK touches (process table + spawn
  * router). Typed here so call sites don't need `as unknown as { _kernel: any }`.
  */
-interface KernelHandle {
+interface KernelHandle extends Partial<LoopbackKernel> {
   router: { delegateFor(tier: string): ((req: Record<string, unknown>) => Promise<unknown>) | undefined };
   registerProcess(spec: { kind: string; argv: string[] }): { caps: unknown };
 }
@@ -365,9 +366,33 @@ export class Nano implements ShellHost, ConnectionInjector {
     return this.raw.readFileString(path);
   }
 
-  /** {@link ConnectionInjector} member — used by the serve bridge. */
+  /**
+   * {@link ConnectionInjector} member — used by the serve bridge. Routes by the
+   * Kernel port table: a server listening on another runner (e.g. a Node
+   * server started with {@link node} on the host engine) is reached over a
+   * Kernel loopback connection; everything else — including VM servers the
+   * table hasn't seen yet — goes to the in-VM VirtualServer. So one
+   * `ServeBridge.register({ injector: nano })` previews both kinds of server.
+   */
   injectConnection(port: number, httpRequest: string | Uint8Array): Promise<Uint8Array> {
+    const k = this.loopbackKernel();
+    const listener = k?.ports.lookup(port);
+    if (k && listener && listener.kind !== "vm") return injectLoopback(k, port, httpRequest);
     return this.raw.virtualServer.injectConnection(port, httpRequest);
+  }
+
+  /**
+   * Servers currently listening in the shared Kernel port table, with the
+   * runner that owns each (`kind`: `"vm"` for the RISC-V VM, `"node"` for
+   * the host engine). VM listeners appear once the VM has served on the port.
+   */
+  listeners(): PortListener[] {
+    return this.loopbackKernel()?.ports.list() ?? [];
+  }
+
+  private loopbackKernel(): LoopbackKernel | null {
+    const k = this.kernel as KernelHandle | undefined;
+    return k?.ports && k.pipes && k.hub ? (k as LoopbackKernel) : null;
   }
 
   // --- factories ---

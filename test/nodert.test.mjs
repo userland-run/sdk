@@ -144,3 +144,40 @@ test("browser bundle path: vendored .gz inflates == .br, and nodert boots from b
   assert.equal(r.stdout, "browser-bytes:25");
   assert.equal(r.exitCode, 0);
 });
+
+// ---- D. serve: Nano.injectConnection reaches host-engine servers (port table) ----
+
+test("Nano.injectConnection routes a host-engine (nodert) server via Kernel loopback", async () => {
+  const k = await freshKernel();
+  let vmInjected = 0;
+  const n = fakeNano("host", {}, k, async () => { throw new Error("VM must not be used"); });
+  n.raw.virtualServer = { injectConnection: async () => { vmInjected++; return new Uint8Array(0); } };
+  const listening = new Promise((resolve) => { const off = k.ports.onListening((ev) => { off(); resolve(ev.port); }); });
+  // Serves two requests, then closes so the process exits.
+  const src = `let n = 0; const s = require("http").createServer((req, res) => {
+    let body = ""; req.on("data", (c) => body += c); req.on("end", () => {
+      res.setHeader("Content-Type", "text/plain");
+      res.end(req.method + " " + req.url + " body=" + body + " conn=" + req.headers.connection);
+      if (++n === 2) s.close();
+    });
+  }); s.listen(4310);`;
+  const run = n.node(["-e", src]);
+  const port = await listening;
+  assert.equal(port, 4310);
+  assert.deepEqual(n.listeners().map((l) => [l.port, l.kind]), [[4310, "node"]]);
+
+  const { parseHttpResponse } = await import("../dist/index.js");
+  const r1 = parseHttpResponse(await n.injectConnection(4310, "GET /hello HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n"));
+  assert.equal(r1.status, 200);
+  assert.equal(new TextDecoder().decode(r1.body), "GET /hello body= conn=close");
+  const req2 = new TextEncoder().encode("POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc");
+  const r2 = parseHttpResponse(await n.injectConnection(4310, req2));
+  assert.equal(new TextDecoder().decode(r2.body), "POST /p body=abc conn=close");
+  assert.equal(vmInjected, 0, "host-engine listener never hits the VM injector");
+
+  const done = await run;
+  assert.equal(done.exitCode, 0);
+  // Ports the table doesn't know (or VM-owned ones) still go to the VM.
+  await n.injectConnection(8080, "GET / HTTP/1.1\r\n\r\n");
+  assert.equal(vmInjected, 1);
+});

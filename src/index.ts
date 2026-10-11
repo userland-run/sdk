@@ -26,6 +26,7 @@ export { Shell, tokenize } from "./shell/shell";
 export { ScriptError } from "./scripting/script-engine";
 
 export { ServeBridge, startServer, parseHttpResponse } from "./serve/bridge";
+export type { PortListener } from "./serve/loopback";
 export {
   registerNanoServiceWorker,
   ensureCrossOriginIsolated,
