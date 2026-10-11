@@ -143,6 +143,25 @@ test("SW leaves same-origin non-document subresources to the network", () => {
   assert.equal(ev.responded, null, "POST not re-fetched/replayed by the SW");
 });
 
+test("SW revalidates runtime assets (wasm, /vendor/, tarballs) instead of trusting the HTTP cache", async () => {
+  const sw = loadSw([{ id: "page" }]);
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => (calls.push({ url, init }), new Response("ok"));
+  try {
+    for (const path of ["/nano/console.wasm", "/vendor/kernel/vfs/memfs.mjs", "/images/devenv.tar.gz"]) {
+      const ev = sw.fetchEvent(ORIGIN + path, { destination: "script" });
+      assert.ok(ev.responded, `${path} handled`);
+      await ev.responded;
+    }
+    assert.deepEqual(calls.map((c) => c.init.cache), ["no-cache", "no-cache", "no-cache"]);
+    assert.equal(sw.fetchEvent(ORIGIN + "/app.js", { destination: "script" }).responded, null);
+    assert.equal(sw.fetchEvent(ORIGIN + "/nano/x.wasm", { method: "POST" }).responded, null);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("SW routes to the requesting / announced bridge page, not clients[0]", async () => {
   const sw = loadSw([{ id: "other-tab" }, { id: "vm-page" }]);
   sw.message("vm-page", { type: "nano-bridge-attach" });

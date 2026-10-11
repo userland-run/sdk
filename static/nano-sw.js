@@ -78,6 +78,15 @@ self.addEventListener("fetch", (event) => {
     } catch {}
   }
 
+  // Runtime assets (wasm images, the vendored /vendor/ runner tree, tarball
+  // overlays) keep stable URLs, so a long-lived HTTP cache entry from an older
+  // release would pair an old wasm with a new host — always revalidate them
+  // (cheap 304 when unchanged).
+  if (event.request.method === "GET" && isRuntimeAsset(url.pathname)) {
+    event.respondWith(fetch(event.request.url, { cache: "no-cache", credentials: "same-origin" }));
+    return;
+  }
+
   // Everything else: only documents and workers need isolation headers. Leave
   // other subresources (and non-GET bodies) to the network untouched — no
   // re-fetch, so a POST body is never replayed.
@@ -113,6 +122,9 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
+const isRuntimeAsset = (pathname) =>
+  pathname.endsWith(".wasm") || pathname.endsWith(".tar.gz") || pathname.includes("/vendor/");
 
 const isPreviewClient = (client) => {
   try {
