@@ -262,6 +262,43 @@ const unregister = exposeWebMcp(tools); // no-op where document.modelContext is 
 
 Full guide: <https://userland.run/docs/sdk-agent/>
 
+## Local folders
+
+`@userland-run/nano-sdk/folder` copies a folder from the user's disk into the VM, tells you what changed,
+and writes the changes back. Nothing is uploaded: files move between the browser's File System Access
+handle and the VM's in-memory filesystem. It works with a `Nano`, a worker client, or a raw `NanoVM`
+(for example `TerminalHandle.vm`).
+
+```ts
+import { mountFolder, zipFolder, isFileSystemAccessSupported } from "@userland-run/nano-sdk/folder";
+
+const dir = await showDirectoryPicker({ mode: "readwrite" });
+const folder = await mountFolder(nano, dir, {
+  at: "/work",                                   // default
+  maxBytes: 256 * 1024 * 1024,                   // default; checked before anything is copied
+  include: (path) => !path.startsWith("node_modules/"), // directories end with "/"
+  onProgress: (p) => console.log(p.phase, p.done, p.total),
+});
+
+await nano.shExec("cd /work && mkdir -p out && sort data.csv > out/sorted.csv");
+
+await folder.diff();      // { added: ["out/sorted.csv"], changed: [], removed: [] }
+await folder.writeBack(); // { written: ["out/sorted.csv"], deleted: [], failed: [], bytes }
+```
+
+- The snapshot taken at mount time stores a size and content hash per file. `diff()` compares the VM's
+  copy against it, and `writeBack()` refreshes it.
+- `writeBack({ onlyChanged = true, deleteRemoved = false, paths?, onProgress? })` writes only new and
+  changed files by default. It never deletes a file on disk unless you pass `deleteRemoved: true`. It
+  asks for `readwrite` permission when the handle doesn't have it yet (the prompt needs a user gesture).
+- Errors: `FolderTooLargeError` (with `bytes`, `maxBytes`, `files`) and `FolderPermissionError`.
+- Firefox and Safari have no directory picker. Use `<input type="file" webkitdirectory>` and
+  `mountFiles(nano, input.files, { at })` instead. Paths come from `webkitRelativePath`, and such a mount
+  can't write back, so offer a download instead.
+- `zipFolder(nano, "/work/out", { compress = true })` returns a zip `Blob`. It deflates with
+  `CompressionStream("deflate-raw")` where available and stores otherwise. There is no zip64, so the
+  limits are 65,535 entries and 4 GiB. `folder.zip()` zips the mount itself.
+
 ## Catalog
 
 Install signed, content-addressed apps from the CDN:

@@ -17,6 +17,8 @@ export default defineConfig({
     terminal: "src/terminal.ts",
     // Agent tools + WebMCP adapter (type-only against the core, so it stays tiny).
     agent: "src/agent/index.ts",
+    // Local folder bridge (mount / diff / write back / zip); structural types only.
+    folder: "src/folder/index.ts",
     // The on-device-AI assistant's WebGPU model worker. The terminal source
     // spawns it via `new Worker(new URL("./local-worker.ts", import.meta.url))`
     // (Vite's worker syntax); esbuild/tsup leaves that URL verbatim, so we emit
@@ -36,6 +38,7 @@ export default defineConfig({
       index: "src/index.ts",
       "worker/worker": "src/worker/worker.ts",
       agent: "src/agent/index.ts",
+      folder: "src/folder/index.ts",
     },
   },
   bundle: true,
@@ -58,6 +61,7 @@ export default defineConfig({
       ...(options.alias ?? {}),
       "@container/nanovm.mjs": path.resolve(here, "src/vendor/nanovm.mjs"),
       "@sdk/agent": path.resolve(here, "src/agent/index.ts"),
+      "@sdk/folder": path.resolve(here, "src/folder/index.ts"),
       "@sdk": path.resolve(here, "src/index.ts"),
     };
   },

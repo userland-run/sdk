@@ -36,6 +36,10 @@
       "types": "./dist/agent.d.ts",
       "import": "./dist/agent.js"
     },
+    "./folder": {
+      "types": "./dist/folder.d.ts",
+      "import": "./dist/folder.js"
+    },
     "./terminal": {
       "types": "./types/terminal.d.ts",
       "import": "./dist/terminal.js"
