@@ -10,8 +10,9 @@
 //   const s = await createHeadless({ wasmUrl: "/nano/nano.wasm" });
 //   await s.installApp("ripgrep");                 // catalog feature
 //   s.fs.writeFile("/work/x.js", "console.log(1)"); // files feature
-//   await s.run("node /work/x.js");                 // run feature
+//   await s.sh("node /work/x.js");                  // run feature (full sh line)
 //   const srv = await s.serve({ node: ["/work/server.js"] }, { port: 3000 }); // preview feature
+//   srv.stop(); s.dispose();                        // teardown
 //
 // This is a thin facade over the in-process Nano core (fs + run + catalog) plus
 // the serve bridge — the same building blocks createTerminal wires into its UI.
@@ -23,7 +24,7 @@ import type { InstallOptions, Manifest } from "./catalog/types";
 import type { ExecOptions, ExecResult, ServerLaunch } from "./types";
 
 export interface HeadlessConfig {
-  /** nano.wasm URL (or bytes). Default "/nano.wasm". */
+  /** nano.wasm URL. Default "/nano.wasm". */
   wasmUrl?: string;
   /** Guest RAM in MB. Default 1800 (V8/Node OOMs below ~1.8 GB). */
   ramMB?: number;
@@ -49,8 +50,8 @@ export interface HeadlessServeOptions {
 }
 
 /**
- * The headless session: the terminal's features, no UI. Mirrors the parts of a
- * {@link TerminalHandle} that aren't about rendering.
+ * The headless session: the terminal's features, no UI. Mirrors the parts of
+ * the terminal display service's handle that aren't about rendering.
  */
 export interface HeadlessSession {
   /** The underlying in-process VM (escape hatch). */
@@ -61,12 +62,23 @@ export interface HeadlessSession {
   catalog(): Catalog;
   /** Install a signed catalog app into this VM. */
   installApp(ref: string, opts?: InstallOptions): Promise<Manifest>;
-  /** Run a BusyBox/binary command (whitespace-split argv). */
+  /**
+   * Run one BusyBox applet with whitespace-split argv — no shell parsing, no
+   * PATH lookup of other binaries. Use {@link sh} for a full command line.
+   */
   run(command: string, opts?: ExecOptions): Promise<ExecResult>;
   /** Run a full shell line (pipes, redirects) via `sh`. */
   sh(line: string, opts?: ExecOptions): Promise<ExecResult>;
-  /** Start an in-VM HTTP server and get a preview URL (the "preview" feature). */
+  /**
+   * Start an in-VM HTTP server and get a preview URL (the "preview" feature).
+   * While it runs it holds the VM; other runs reject until `stop()`.
+   */
   serve(launch: ServerLaunch, opts?: HeadlessServeOptions): Promise<HeadlessServer>;
+  /**
+   * Tear down: stop running servers, detach the preview bridge's message
+   * listener (the SW stays registered), and destroy the VM. Idempotent.
+   */
+  dispose(): void;
 }
 
 /** Boot a headless session exposing the terminal's features without any UI. */
@@ -75,7 +87,12 @@ export async function createHeadless(config: HeadlessConfig = {}): Promise<Headl
     image: { wasm: config.wasmUrl ?? "/nano.wasm" },
     ramMB: config.ramMB ?? 1800,
   });
-  let bridge: ServeBridge | null = null;
+  let bridge: Promise<ServeBridge> | null = null;
+  const servers = new Set<() => void>();
+  let disposed = false;
+  const live = (): void => {
+    if (disposed) throw new Error("nano-sdk: headless session is disposed");
+  };
 
   return {
     vm,
@@ -85,16 +102,38 @@ export async function createHeadless(config: HeadlessConfig = {}): Promise<Headl
     run: (command, opts) => vm.run(command, opts),
     sh: (line, opts) => vm.shExec(line, opts),
     async serve(launch, opts = {}) {
+      live();
       const port = opts.port ?? 8080;
-      bridge ??= await ServeBridge.register({
+      // Share one in-flight registration between concurrent serve() calls.
+      bridge ??= ServeBridge.register({
         swUrl: config.serviceWorkerUrl ?? "/nano-sw.js",
         injector: vm,
       });
-      const { stop } = await startServer(vm, launch, {
+      let b: ServeBridge;
+      try {
+        b = await bridge;
+      } catch (e) {
+        bridge = null; // allow a retry
+        throw e;
+      }
+      const { stop: stopRun } = await startServer(vm, launch, {
         readyPattern: opts.readyPattern,
         onData: opts.onData,
       });
-      return { url: (path?: string) => bridge!.previewUrl(port, path), stop };
+      const stop = (): void => {
+        servers.delete(stop);
+        stopRun();
+      };
+      servers.add(stop);
+      return { url: (path?: string) => b.previewUrl(port, path), stop };
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const stop of [...servers]) stop();
+      void bridge?.then((b) => b.detach(), () => undefined);
+      bridge = null;
+      vm.destroy();
     },
   };
 }

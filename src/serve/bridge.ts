@@ -22,18 +22,26 @@ function indexOfCrlfCrlf(buf: Uint8Array): number {
 }
 
 function decodeChunked(data: Uint8Array): Uint8Array {
-  const out: number[] = [];
+  // The decoded body is never larger than the encoded one: size it once and
+  // copy whole chunks (no per-byte array growth).
+  const out = new Uint8Array(data.length);
+  const dec = new TextDecoder();
+  let len = 0;
   let i = 0;
   while (i < data.length) {
     let lineEnd = i;
     while (lineEnd + 1 < data.length && !(data[lineEnd] === 13 && data[lineEnd + 1] === 10)) lineEnd++;
-    const size = parseInt(new TextDecoder().decode(data.subarray(i, lineEnd)).trim(), 16);
+    // Chunk extensions (";name=value") follow the size.
+    const sizeField = dec.decode(data.subarray(i, lineEnd)).split(";")[0] ?? "";
+    const size = parseInt(sizeField.trim(), 16);
     if (!size || Number.isNaN(size)) break;
     i = lineEnd + 2; // skip CRLF after the size line
-    for (let j = 0; j < size && i < data.length; j++) out.push(data[i++] as number);
-    i += 2; // skip CRLF after the chunk
+    const end = Math.min(i + size, data.length);
+    out.set(data.subarray(i, end), len);
+    len += end - i;
+    i = end + 2; // skip CRLF after the chunk
   }
-  return new Uint8Array(out);
+  return out.slice(0, len);
 }
 
 /**
@@ -94,14 +102,21 @@ export class ServeBridge {
 
     const listener = (event: MessageEvent): void => {
       const data = event.data as
-        | { type?: string; port?: number; httpRequest?: string }
+        | { type?: string; port?: number; httpRequest?: string; httpRequestBytes?: ArrayBuffer }
         | undefined;
       if (!data || data.type !== "sw-request") return;
       const replyPort = event.ports[0];
       if (!replyPort) return;
 
+      // Prefer the binary-safe request bytes (current SW); fall back to the
+      // legacy string form from older service workers.
+      const request: string | Uint8Array =
+        data.httpRequestBytes instanceof ArrayBuffer
+          ? new Uint8Array(data.httpRequestBytes)
+          : (data.httpRequest as string);
+
       void opts.injector
-        .injectConnection(data.port as number, data.httpRequest as string)
+        .injectConnection(data.port as number, request)
         .then((raw) => {
           const parsed = parseHttpResponse(raw);
           replyPort.postMessage(parsed, [parsed.body]);
@@ -118,7 +133,18 @@ export class ServeBridge {
     };
 
     navigator.serviceWorker.addEventListener("message", listener);
+    // Announce this page as a VM host so the SW routes preview requests here
+    // (and not to some other same-origin window).
+    ServeBridge.announce(registration, "nano-bridge-attach");
     return new ServeBridge(scope, registration, listener);
+  }
+
+  private static announce(registration: ServiceWorkerRegistration, type: string): void {
+    try {
+      (registration.active ?? navigator.serviceWorker.controller)?.postMessage({ type });
+    } catch {
+      /* best-effort: the SW falls back to its client heuristic */
+    }
   }
 
   /** URL the preview iframe should load: `<scope>sw/<port>/<path>`. */
@@ -130,6 +156,7 @@ export class ServeBridge {
   /** Stop handling sw-request messages (keeps the SW registered). */
   detach(): void {
     navigator.serviceWorker.removeEventListener("message", this.listener);
+    ServeBridge.announce(this.registration, "nano-bridge-detach");
   }
 
   async unregister(): Promise<void> {
@@ -146,6 +173,10 @@ export class ServeBridge {
  * Start an in-VM server. Because a listening server never resolves its run
  * promise (§2.7), this resolves on output readiness (default `/listening/i`) and
  * returns `{ stop }`. Rejects if the run resolves before readiness (early exit).
+ *
+ * While the server runs it holds the VM: other run/shExec/node/fs-mutation
+ * calls on the same Nano reject with a "VM is busy serving" error until
+ * `stop()` (see {@link Nano.withVmLock}). Use a second instance for concurrent work.
  */
 export function startServer(
   nano: Nano,
@@ -168,10 +199,7 @@ export function startServer(
       }
     };
 
-    const runPromise =
-      "node" in launch
-        ? nano.node(launch.node, { onData })
-        : nano.shExec(launch.command, { onData });
+    const runPromise = nano.launchServer(launch, { onData });
 
     runPromise.then(
       (res) => {

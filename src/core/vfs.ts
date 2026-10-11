@@ -19,7 +19,15 @@ function q(path: string): string {
 export class Vfs {
   private seq = 0;
 
-  constructor(private readonly vm: NanoVM) {}
+  /**
+   * @param vm   the underlying VM.
+   * @param lock optional VM mutex (see {@link Nano.withVmLock}); BusyBox-backed
+   *             mutations run under it so they never overlap another run.
+   */
+  constructor(
+    private readonly vm: NanoVM,
+    private readonly lock: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn(),
+  ) {}
 
   // --- fast path: direct MemFS, no VM step ---
 
@@ -57,7 +65,17 @@ export class Vfs {
   }
 
   exists(path: string): boolean {
-    return this.vm.readFileString(path) !== null || this.vm.listDir(path) !== null;
+    const node = this.vm._memfs.resolve(path);
+    return !!node && (node.isFile || node.isDir);
+  }
+
+  /** Best-effort file removal straight through MemFS (no VM step). */
+  unlinkQuiet(path: string): void {
+    try {
+      this.vm._memfs.unlink(path, 0);
+    } catch {
+      /* ignore */
+    }
   }
 
   /** Recursive file list under `root`. */
@@ -97,11 +115,17 @@ export class Vfs {
     await this.vm.loadTarGz(buffer);
   }
 
-  /** Run a sh line via the file-script mechanism (§2.4). */
+  /** Run a sh line via the file-script mechanism (§2.4), under the VM lock. */
   private async shRun(line: string): Promise<void> {
-    const path = `/tmp/.nano-vfs-${(this.seq++).toString(36)}.sh`;
-    this.vm.addFile(path, line + "\n");
-    const res = await this.vm.run(`sh ${path}`);
+    const res = await this.lock(async () => {
+      const path = `/tmp/.nano-vfs-${(this.seq++).toString(36)}.sh`;
+      this.vm.addFile(path, line + "\n");
+      try {
+        return await this.vm.run(`sh ${path}`);
+      } finally {
+        this.unlinkQuiet(path);
+      }
+    });
     if (res.exitCode !== 0) {
       throw new Error(`nano-sdk: fs op failed (exit ${res.exitCode}): ${line}\n${res.stdout}`);
     }

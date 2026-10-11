@@ -15,6 +15,8 @@ import type { RestoreOptions, VMSnapshot } from "../vendor/nanovm.mjs";
  */
 export class NodeRuntime {
   private snap: VMSnapshot | null = null;
+  /** In-flight warmup, shared so concurrent run()/warmup() calls build once. */
+  private warming: Promise<VMSnapshot> | null = null;
 
   constructor(private readonly nano: Nano) {}
 
@@ -23,14 +25,32 @@ export class NodeRuntime {
   }
 
   async warmup(opts?: { maxSteps?: number }): Promise<void> {
-    if (this.snap) return;
-    this.snap = await this.nano.raw.nodeSnapshot(opts);
+    await this.ensureSnapshot(opts);
+  }
+
+  private ensureSnapshot(opts?: { maxSteps?: number }): Promise<VMSnapshot> {
+    if (this.snap) return Promise.resolve(this.snap);
+    if (!this.warming) {
+      const warming = this.nano.withVmLock(() => this.nano.raw.nodeSnapshot(opts));
+      this.warming = warming;
+      warming.then(
+        (s) => {
+          if (this.warming === warming) this.snap = s;
+        },
+        () => undefined,
+      );
+      // Clear the in-flight marker once settled (a failure can be retried).
+      void warming
+        .catch(() => undefined)
+        .then(() => {
+          if (this.warming === warming) this.warming = null;
+        });
+    }
+    return this.warming;
   }
 
   async run(source: string, opts?: NodeRunOptions): Promise<ExecResult> {
-    if (!this.snap) await this.warmup();
-    const snap = this.snap;
-    if (!snap) throw new Error("nano-sdk: node runtime failed to warm up");
+    const snap = await this.ensureSnapshot();
 
     const ro: RestoreOptions = {};
     if (opts?.onData) ro.onStdout = opts.onData;
@@ -39,11 +59,12 @@ export class NodeRuntime {
     ro.maxSteps = opts?.maxSteps ?? NODE_DEFAULT_MAX_STEPS;
     if (opts?.extraFiles) ro.extraFiles = opts.extraFiles;
 
-    return this.nano.raw.restoreAndRun(snap, source, ro);
+    return this.nano.withVmLock(() => this.nano.raw.restoreAndRun(snap, source, ro));
   }
 
   /** Drop the warm snapshot; the next run re-warms (optionally from new fs state). */
   reset(): void {
     this.snap = null;
+    this.warming = null;
   }
 }

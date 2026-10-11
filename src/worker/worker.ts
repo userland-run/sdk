@@ -41,6 +41,7 @@ let appWarmup: Record<string, unknown> | null = null;
 let appSnap: unknown = null;
 let appSnapPromise: Promise<unknown> | null = null;
 
+/** Must be called under the VM lock (it may run a warmup build on the VM). */
 function ensureAppSnap(
   raw: {
     snapshotApp: (o: unknown) => Promise<unknown>;
@@ -61,7 +62,12 @@ function ensureAppSnap(
           readyStatus: w.ready.status,
         })
       : raw.snapshotApp(appWarmup);
-    appSnapPromise = build.then((s) => (appSnap = s));
+    const p = build.then((s) => (appSnap = s));
+    appSnapPromise = p;
+    // A failed build must not poison every later restoreRun: allow a retry.
+    p.catch(() => {
+      if (appSnapPromise === p) appSnapPromise = null;
+    });
   }
   return appSnapPromise;
 }
@@ -183,6 +189,40 @@ async function dispatchScript(req: Extract<Req, { kind: "call" }>, nanoInst: Nan
   }
 }
 
+/** RPC allowlist per dispatch target (mirrors the NanoWorkerClient surface). */
+const CALLABLE: Record<string, ReadonlySet<string>> = {
+  nano: new Set([
+    "run",
+    "exec",
+    "shExec",
+    "node",
+    "readText",
+    "resolveNodeEngine",
+    "installApp",
+    "installBundle",
+    "execWasmApp",
+    "writeStdin",
+    "setInteractiveStdin",
+    "closeStdin",
+    "cancel",
+    "destroy",
+  ]),
+  fs: new Set([
+    "writeFile",
+    "readText",
+    "readFile",
+    "list",
+    "exists",
+    "walk",
+    "mkdir",
+    "remove",
+    "move",
+    "copy",
+    "loadTarGz",
+  ]),
+  node: new Set(["warmup", "run", "reset"]),
+};
+
 /** For streaming calls, splice an onData poster into the trailing options object. */
 function injectStream(req: Extract<Req, { kind: "call" }>): void {
   if (!req.stream) return;
@@ -215,7 +255,7 @@ async function dispatch(
       host = nodeInst;
       break;
     case "server":
-      return nanoInst.injectConnection(args[0] as number, args[1] as string);
+      return nanoInst.injectConnection(args[0] as number, args[1] as string | Uint8Array);
     case "vm": {
       // Generic, runtime-agnostic snapshot/restore (recipe-driven warmup + run).
       const raw = (nanoInst as unknown as { raw: { snapshotApp: (o: unknown) => Promise<unknown>; snapshotAppReady: (o: unknown) => Promise<unknown>; restoreAndRun: (s: unknown, src: string, o: unknown) => Promise<unknown> } }).raw;
@@ -234,17 +274,27 @@ async function dispatch(
         appSnapPromise = Promise.resolve(appSnap);
         return true;
       }
+      // Snapshot build + restore occupy the VM: run them under the Nano's VM
+      // lock so they never overlap a run/shExec/node (or each other).
       if (method === "warmup") {
-        await ensureAppSnap(raw); // build the snapshot (or join the in-flight build)
+        // build the snapshot (or reuse the one built by an earlier holder)
+        await nanoInst.withVmLock(() => ensureAppSnap(raw));
         return true;
       }
-      if (method === "restoreRun") {
-        const snap = await ensureAppSnap(raw); // waits for any in-flight warmup
+      if (method === "restoreRun" || method === "restoreServe") {
         // injectStream splices the stream poster in as `onData`; restoreAndRun
         // wants `onStdout` (mirrors NodeRuntime.run).
         const o = (args[1] ?? {}) as Record<string, unknown>;
         if (o.onData && !o.onStdout) o.onStdout = o.onData;
-        return raw.restoreAndRun(snap, args[0] as string, o);
+        // A served app never returns until cancelled: hold the VM as a server
+        // so other calls fail fast instead of queueing forever.
+        const lock = method === "restoreServe"
+          ? <T>(fn: () => Promise<T>) => nanoInst.withVmServerLock(fn)
+          : <T>(fn: () => Promise<T>) => nanoInst.withVmLock(fn);
+        return lock(async () => {
+          const snap = await ensureAppSnap(raw); // queued behind any warmup
+          return raw.restoreAndRun(snap, args[0] as string, o);
+        });
       }
       throw new Error(`nano-sdk worker: vm.${method} not supported`);
     }
@@ -252,7 +302,9 @@ async function dispatch(
       throw new Error(`nano-sdk worker: unknown target ${target}`);
   }
 
-  const fn = (host as Record<string, unknown>)[method];
+  // Only the documented RPC surface is callable — never arbitrary (private or
+  // inherited) members of the host objects.
+  const fn = CALLABLE[target]?.has(method) ? (host as Record<string, unknown>)[method] : undefined;
   if (typeof fn !== "function") {
     throw new Error(`nano-sdk worker: ${target}.${method} is not callable`);
   }

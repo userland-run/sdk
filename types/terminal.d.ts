@@ -75,6 +75,8 @@ export interface TerminalHandle {
   openFile: (path: string) => void;
   /** Reveal the Preview tab on a port (no-op if preview is disabled). */
   showPreview: (port?: number) => void;
+  /** Tear down the terminal: stops the VM, render loop, timers and listeners. */
+  dispose: () => void;
   /** Re-list the Files panel tree (after external FS changes). */
   refreshFiles: () => void;
 }

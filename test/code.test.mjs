@@ -33,3 +33,21 @@ test("exec() single-quotes argv and runs it through sh [feat:sdk.code.exec]", as
   assert.equal(r.exitCode, 0);
   assert.equal(r.stdout.trim(), "a b c");
 });
+
+test("overlapping run/shExec/fs calls are serialized, not clobbered [feat:sdk.code.exec]", async () => {
+  // Fired without awaiting: before the VM mutex, each run reset the shared VM
+  // and the earlier ones returned the later one's (or truncated) output.
+  const [a, b, , c] = await Promise.all([
+    nano.run("echo first-run"),
+    nano.shExec("echo second | tr a-z A-Z"),
+    nano.fs.mkdir("/tmp/overlap-dir"),
+    nano.exec(["echo", "third"]),
+  ]);
+  assert.match(a.stdout, /first-run/);
+  assert.equal(b.stdout.trim(), "SECOND");
+  assert.equal(c.stdout.trim(), "third");
+  assert.ok(nano.fs.exists("/tmp/overlap-dir"));
+  // One-shot scripts are cleaned up after use.
+  const leftovers = (nano.fs.list("/tmp") ?? []).filter((e) => /^\.nano-(exec|vfs)-/.test(e.name));
+  assert.deepEqual(leftovers, []);
+});

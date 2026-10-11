@@ -35,7 +35,7 @@ export {
 
 export { NodeRuntime } from "./node/node-runtime";
 
-export { NanoWorkerClient, createNanoWorker } from "./worker/client";
+export { NanoWorkerClient, createNanoWorker, type NanoWorkerOptions } from "./worker/client";
 
 export {
   provision,
@@ -49,6 +49,7 @@ export {
 export {
   Catalog,
   type CatalogOptions,
+  type BundleInstallResult,
   CdnClient,
   type CdnOptions,
   openChunkCache,
@@ -56,12 +57,15 @@ export {
   installApp,
   resolveIndex,
   resolveManifest,
+  fetchVerifiedChunk,
   verifySigned,
   sha256Hex,
   canonicalize,
   catalogPublicKey,
   publicKeyFromB64,
   CATALOG_PUBLIC_KEY_B64,
+  defaultGenerationStore,
+  type GenerationStore,
   manifestKind,
   isWasmKind,
   kindToTier,
@@ -78,6 +82,8 @@ export {
   type InstallTarget,
   type InstallOptions,
   type InstallProgress,
+  type LazyFileMeta,
+  type BundleManifest,
 } from "./catalog";
 
 export * from "./types";

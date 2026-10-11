@@ -4,7 +4,7 @@
 
 /** Catalog client: fetch → verify → install nano apps from the CDN (spec §6–§7). */
 
-export { Catalog, type CatalogOptions } from "./catalog";
+export { Catalog, type CatalogOptions, type BundleInstallResult } from "./catalog";
 export { CdnClient, type CdnOptions } from "./cdn";
 export { openChunkCache, type ChunkCache } from "./cache";
 export {
@@ -13,6 +13,8 @@ export {
   resolveManifest,
   fetchVerifiedChunk,
   assembleFile,
+  defaultGenerationStore,
+  type GenerationStore,
   type InstallContext,
 } from "./installer";
 export { verifySigned, sha256Hex, canonicalize, catalogPublicKey, publicKeyFromB64 } from "./crypto";
@@ -31,4 +33,5 @@ export type {
   InstallOptions,
   InstallProgress,
   LazyFileMeta,
+  BundleManifest,
 } from "./types";

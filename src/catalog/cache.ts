@@ -13,12 +13,15 @@
 export interface ChunkCache {
   get(sha256: string): Promise<Uint8Array | null>;
   put(sha256: string, bytes: Uint8Array): Promise<void>;
+  /** Evict an entry (e.g. one that failed re-verification). Optional. */
+  delete?(sha256: string): Promise<void>;
 }
 
 class MemoryCache implements ChunkCache {
   private map = new Map<string, Uint8Array>();
   async get(sha: string) { return this.map.get(sha) ?? null; }
   async put(sha: string, bytes: Uint8Array) { this.map.set(sha, bytes); }
+  async delete(sha: string) { this.map.delete(sha); }
 }
 
 class OpfsCache implements ChunkCache {
@@ -42,6 +45,14 @@ class OpfsCache implements ChunkCache {
       await w.close();
     } catch {
       /* best-effort: a cache write failure is non-fatal (we just refetch) */
+    }
+  }
+
+  async delete(sha: string): Promise<void> {
+    try {
+      await this.dir.removeEntry(sha);
+    } catch {
+      /* already gone */
     }
   }
 }

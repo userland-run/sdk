@@ -9,6 +9,7 @@ import {
   installApp,
   resolveIndex,
   resolveManifest,
+  type GenerationStore,
   type InstallContext,
 } from "./installer";
 import type { BundleManifest, Collection, InstallOptions, InstallTarget, Manifest, SignedIndex } from "./types";
@@ -25,8 +26,10 @@ export interface CatalogOptions {
   cdn?: CdnOptions;
   /** Provide a chunk cache; default is OPFS-backed (memory fallback). */
   cache?: ChunkCache;
-  /** Override the verification key (raw base64). Default: bundled catalog.pub. */
+  /** Override the verification key (raw base64). Default: the bundled key (pubkey.ts). */
   publicKeyB64?: string;
+  /** Rollback-guard store (highest verified index generation). Default: localStorage/memory. */
+  generations?: GenerationStore;
 }
 
 /**
@@ -43,17 +46,19 @@ export class Catalog {
   private readonly cdn: CdnClient;
   private readonly cachePromise: Promise<ChunkCache>;
   private readonly publicKeyB64?: string;
+  private readonly generations?: GenerationStore;
 
   constructor(opts: CatalogOptions = {}) {
     this.cdn = new CdnClient(opts.cdn);
     this.cachePromise = opts.cache ? Promise.resolve(opts.cache) : openChunkCache();
     this.publicKeyB64 = opts.publicKeyB64;
+    this.generations = opts.generations;
   }
 
   private async ctx(): Promise<InstallContext> {
     const cache = await this.cachePromise;
     const key = this.publicKeyB64 ? await publicKeyFromB64(this.publicKeyB64) : undefined;
-    return { cdn: this.cdn, cache, key };
+    return { cdn: this.cdn, cache, key, keyId: this.publicKeyB64, generations: this.generations };
   }
 
   /** The current signed index (verified). */

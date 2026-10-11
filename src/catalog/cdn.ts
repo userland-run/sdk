@@ -40,18 +40,56 @@ export class CdnClient {
     this.fetchFn = opts.fetchFn ?? globalThis.fetch.bind(globalThis);
   }
 
-  /** Resolve the newest catalog generation (memoized). jsDelivr-only. */
+  /**
+   * Resolve the newest catalog generation (memoized). jsDelivr-only. A failed
+   * lookup is not memoized, so the next call retries.
+   */
   async generation(): Promise<number> {
     if (this.baseUrl) return 0; // flat origin: no generations
-    return (this.genPromise ??= (async () => {
-      const r = await this.fetchFn(`${JSDELIVR_DATA}/${INDEX_PKG}`);
-      if (!r.ok) throw new Error(`catalog: versions API ${r.status}`);
-      const data = (await r.json()) as { versions?: Array<{ version: string }> };
-      const versions = (data.versions ?? []).map((v) => v.version);
-      if (versions.length === 0) throw new Error("catalog: no published generations");
-      // Versions are 0.0.<gen>; newest gen = max patch.
-      return Math.max(...versions.map((v) => Number(v.split(".").pop())));
-    })());
+    if (!this.genPromise) {
+      const p = (async () => {
+        const r = await this.fetchFn(`${JSDELIVR_DATA}/${INDEX_PKG}`);
+        if (!r.ok) throw new Error(`catalog: versions API ${r.status}`);
+        const data = (await r.json()) as { versions?: Array<{ version?: unknown }> };
+        // Versions are 0.0.<gen>; newest gen = max patch. Ignore anything that
+        // isn't a plain non-negative integer generation (pre-releases, junk).
+        const gens = (data.versions ?? [])
+          .map((v) => (typeof v?.version === "string" ? v.version : ""))
+          .map((v) => {
+            const m = /^0\.0\.(\d+)$/.exec(v);
+            return m ? Number(m[1]) : NaN;
+          })
+          .filter((g) => Number.isSafeInteger(g) && g >= 0);
+        if (gens.length === 0) throw new Error("catalog: no published generations");
+        return Math.max(...gens);
+      })();
+      this.genPromise = p;
+      p.catch(() => {
+        if (this.genPromise === p) this.genPromise = undefined;
+      });
+    }
+    return this.genPromise;
+  }
+
+  /**
+   * The generation the next index fetch is pinned to, or null for a flat
+   * `baseUrl` origin (which has no generation addressing).
+   */
+  async expectedGeneration(): Promise<number | null> {
+    return this.baseUrl ? null : this.generation();
+  }
+
+  /**
+   * Pin the generation (e.g. to a newer one already verified, when the
+   * versions API answers from a stale edge). No-op for a flat origin.
+   */
+  pinGeneration(generation: number): void {
+    if (!this.baseUrl) this.genPromise = Promise.resolve(generation);
+  }
+
+  /** Stable identity of this origin (for per-origin rollback state). */
+  get originId(): string {
+    return this.baseUrl ?? `${JSDELIVR_CDN}/${INDEX_PKG}`;
   }
 
   private async versionString(): Promise<string> {

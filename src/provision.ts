@@ -10,7 +10,7 @@
 
 import { createNanoWorker, type NanoWorkerClient } from "./worker/client";
 import type { Catalog } from "./catalog/catalog";
-import type { AppRecipe } from "./catalog/types";
+import type { AppRecipe, InstallTarget } from "./catalog/types";
 import { registerNanoServiceWorker } from "./serve/register-sw";
 import { ServeBridge } from "./serve/bridge";
 import type { ExecResult } from "./types";
@@ -65,7 +65,10 @@ export interface ProvisionedApp {
   run(file: string, opts?: RunOptions): Promise<ExecResult>;
   /** Run inline source (recipe.run.evalScript). */
   evalCode(code: string, opts?: RunOptions): Promise<ExecResult>;
-  /** Start a long-running server file; resolves once it reports readiness. */
+  /**
+   * Start a long-running server file; resolves once it reports readiness. The
+   * server holds the VM: run/evalCode/sh reject until `stop()`.
+   */
   serve(file: string, opts: ServeOptions): Promise<ServiceHandle>;
   /** Raw busybox/shell exec (not the provisioned app). */
   sh(line: string, opts?: RunOptions): Promise<ExecResult>;
@@ -75,29 +78,64 @@ function envToArray(env?: Record<string, string>): string[] {
   return Object.entries(env ?? {}).map(([k, v]) => `${k}=${v}`);
 }
 
+/** A streaming sink plus a flush for the trailing partial line. */
+export interface FilteredSink {
+  write: (chunk: string) => void;
+  /** Emit a buffered trailing line that never got its "\n" (unless filtered). */
+  flush: () => void;
+}
+
 /**
  * Wrap a streaming sink so the recipe's output filters apply live: forward whole
  * lines, but stop at the first line matching a filter (the trailing trace, e.g.
  * node's shutdown assertion, is always last — so cutting from there is safe).
+ * Call `flush()` when the run ends so a final unterminated line isn't lost.
  */
-function filteredSink(onStdout: ((c: string) => void) | undefined, filters: string[]): ((c: string) => void) | undefined {
-  if (!onStdout || !filters.length) return onStdout;
+export function filteredSink(
+  onStdout: ((c: string) => void) | undefined,
+  filters: string[],
+): FilteredSink | undefined {
+  if (!onStdout) return undefined;
+  if (!filters.length) return { write: onStdout, flush: () => {} };
   const res = filters.map((f) => new RegExp(f));
   let pending = "";
   let stopped = false;
-  return (chunk: string) => {
-    if (stopped) return;
-    pending += chunk;
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const line of lines) {
-      if (res.some((r) => r.test(line))) {
+  const matches = (line: string): boolean => res.some((r) => r.test(line));
+  return {
+    write: (chunk: string) => {
+      if (stopped) return;
+      pending += chunk;
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        if (matches(line)) {
+          stopped = true;
+          pending = "";
+          return;
+        }
+        onStdout(line + "\n");
+      }
+    },
+    flush: () => {
+      if (stopped || !pending) return;
+      const line = pending;
+      pending = "";
+      if (matches(line)) {
         stopped = true;
         return;
       }
-      onStdout(line + "\n");
-    }
+      onStdout(line);
+    },
   };
+}
+
+/**
+ * Substitute `${name}` in a recipe template. Uses a replacer FUNCTION so `$&`,
+ * `$1`, `$$`… in the substituted value (user code!) are inserted literally,
+ * and replaces every occurrence.
+ */
+export function fillTemplate(template: string, name: string, value: string): string {
+  return template.split("${" + name + "}").join(value);
 }
 
 /** Apply the recipe's output filters + benign exit codes (e.g. strip node's
@@ -133,16 +171,32 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
   // Forward the file mode: the catalog ships busybox/node as 0755, and the guest
   // enforces the exec bit (execve → EACCES without it), so dropping mode here would
   // leave /bin/busybox non-executable and break `sh`-launched applets (pipes, etc.).
-  const target = { writeFile: (p: string, b: Uint8Array, mode?: number) => client.fs.writeFile(p, b, mode) };
+  // The worker write is async; the installer awaits it (so failures surface).
+  const target: InstallTarget = {
+    writeFile: (p: string, b: Uint8Array, mode?: number) => client.fs.writeFile(p, b, mode),
+  };
 
-  log(`installing ${ref}…`);
-  const manifest = await catalog.install(target as never, ref);
+  let manifest;
+  try {
+    log(`installing ${ref}…`);
+    manifest = await catalog.install(target, ref);
+  } catch (e) {
+    client.destroy(); // don't leak the worker VM
+    throw e;
+  }
   // The app's signed manifest carries its recipe; `opts.recipe` only overrides.
   const recipe: AppRecipe = manifest.recipe ?? opts.recipe ?? {};
 
   for (const dep of [...(recipe.deps ?? []), ...(opts.extraApps ?? [])]) {
     log(`installing ${dep}…`);
-    await catalog.install(target as never, dep).catch(() => {});
+    try {
+      await catalog.install(target, dep);
+    } catch (e) {
+      // A dep is best-effort (the app may still run), but never fail silently.
+      const msg = e instanceof Error ? e.message : String(e);
+      log(`failed to install ${dep}: ${msg}`);
+      console.warn(`nano-sdk provision: failed to install ${dep}:`, e);
+    }
   }
 
   if (recipe.warmup) {
@@ -178,9 +232,8 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
     }
   }
 
-  const fileScript = (file: string): string =>
-    (recipe.run?.fileScript ?? "${file}").replace("${file}", file);
-  const evalScript = (code: string): string => (recipe.run?.evalScript ?? "${code}").replace("${code}", code);
+  const fileScript = (file: string): string => fillTemplate(recipe.run?.fileScript ?? "${file}", "file", file);
+  const evalScript = (code: string): string => fillTemplate(recipe.run?.evalScript ?? "${code}", "code", code);
 
   let bridge: { previewUrl: (port: number, path?: string) => string } | null = null;
   const ensureBridge = async (): Promise<typeof bridge> => {
@@ -192,15 +245,21 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
   // a real one (a warm V8 still executes billions of instructions).
   const DEFAULT_RUN_STEPS = 2_000_000_000;
   const filters = recipe.outputFilters ?? [];
-  const restore = async (script: string, o?: RunOptions, maxSteps?: number): Promise<ExecResult> =>
-    applyRecipe(
-      await client.restoreRun(script, {
-        extraFiles: o?.extraFiles,
-        onData: filteredSink(o?.onStdout, filters),
-        maxSteps: maxSteps ?? o?.maxSteps ?? DEFAULT_RUN_STEPS,
-      }),
-      recipe,
-    );
+  const restore = async (script: string, o?: RunOptions, maxSteps?: number): Promise<ExecResult> => {
+    const sink = filteredSink(o?.onStdout, filters);
+    try {
+      return applyRecipe(
+        await client.restoreRun(script, {
+          extraFiles: o?.extraFiles,
+          onData: sink?.write,
+          maxSteps: maxSteps ?? o?.maxSteps ?? DEFAULT_RUN_STEPS,
+        }),
+        recipe,
+      );
+    } finally {
+      sink?.flush();
+    }
+  };
 
   log("ready");
   return {
@@ -213,18 +272,21 @@ export async function provision(catalog: Catalog, ref: string, opts: ProvisionOp
       const ready = o.readyPattern ?? /listening|running|started|ready/i;
       const sink = filteredSink(o.onStdout, filters);
       let signalled = false;
-      const done = client.restoreRun(fileScript(file), {
+      const done = client.restoreServe(fileScript(file), {
         extraFiles: o.extraFiles,
         maxSteps: o.maxSteps ?? 200_000_000_000,
         onData: (chunk) => {
-          sink?.(chunk);
+          sink?.write(chunk);
           if (!signalled && ready.test(chunk)) {
             signalled = true;
             o.onListening?.();
           }
         },
       });
-      done.catch(() => {});
+      done.then(
+        () => sink?.flush(),
+        () => sink?.flush(),
+      );
       return {
         url: async (path) => (await ensureBridge())!.previewUrl(o.port, path),
         stop: () => client.cancel(),

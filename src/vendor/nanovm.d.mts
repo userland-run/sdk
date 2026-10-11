@@ -82,13 +82,15 @@ export interface FSNode {
 export interface MemFS {
   resolve(path: string, followSymlinks?: boolean, maxDepth?: number): FSNode | null;
   createFile(path: string, content: string | Uint8Array | ArrayBuffer): FSNode;
+  /** Remove a file (flags 0x200 = AT_REMOVEDIR). Returns 0 or a negative errno. */
+  unlink(path: string, flags?: number): number;
   loadTarGz(buffer: ArrayBuffer | Uint8Array): Promise<void>;
   serialize(): unknown[];
 }
 
 /** Injects browser→guest HTTP connections into in-VM servers. */
 export interface VirtualServer {
-  injectConnection(port: number, httpRequest: string): Promise<Uint8Array>;
+  injectConnection(port: number, httpRequest: string | Uint8Array): Promise<Uint8Array>;
 }
 
 /** Request handed to a {@link NanoVM.setLlmBridge} handler. */

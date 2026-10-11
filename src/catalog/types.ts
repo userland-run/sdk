@@ -182,7 +182,8 @@ export interface BundleManifest {
 
 /** Where to write installed files (satisfied by {@link Vfs}). */
 export interface InstallTarget {
-  writeFile(path: string, content: Uint8Array, mode?: number): void;
+  /** Write one file. May be async (e.g. a worker-hosted VM); the installer awaits it. */
+  writeFile(path: string, content: Uint8Array, mode?: number): void | Promise<void>;
   /** Optional: register a file for lazy demand-fetch instead of eager write. */
   registerLazyFile?(path: string, meta: LazyFileMeta): void;
 }

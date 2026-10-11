@@ -29,7 +29,56 @@ export interface InstallContext {
   cache: ChunkCache;
   /** Override the verification key (tests / custom catalogs). Default: bundled. */
   key?: CryptoKey;
+  /**
+   * Rollback guard: remembers the highest verified index generation per origin
+   * and rejects an index older than it. Default: {@link defaultGenerationStore}.
+   */
+  generations?: GenerationStore;
+  /** Identity of `key` for per-catalog rollback state (e.g. its raw base64). */
+  keyId?: string;
 }
+
+/** Persists the highest verified catalog generation seen, per origin/key scope. */
+export interface GenerationStore {
+  get(scope: string): number | null | Promise<number | null>;
+  set(scope: string, generation: number): void | Promise<void>;
+}
+
+const GEN_KEY_PREFIX = "nano-catalog:generation:";
+const memoryGenerations = new Map<string, number>();
+
+/**
+ * Default rollback store: localStorage when available (survives reloads), with
+ * an in-memory fallback (workers, Node, blocked storage). Every access is
+ * guarded — storage failures never break installs, they only weaken the guard
+ * to this page lifetime.
+ */
+export const defaultGenerationStore: GenerationStore = {
+  get(scope) {
+    let best = memoryGenerations.get(scope) ?? null;
+    try {
+      const ls = (globalThis as { localStorage?: Storage }).localStorage;
+      const raw = ls?.getItem(GEN_KEY_PREFIX + scope);
+      const n = raw == null ? NaN : Number(raw);
+      if (Number.isSafeInteger(n) && (best === null || n > best)) best = n;
+    } catch {
+      /* storage blocked */
+    }
+    return best;
+  },
+  set(scope, generation) {
+    const prev = memoryGenerations.get(scope);
+    if (prev === undefined || generation > prev) memoryGenerations.set(scope, generation);
+    try {
+      const ls = (globalThis as { localStorage?: Storage }).localStorage;
+      const raw = ls?.getItem(GEN_KEY_PREFIX + scope);
+      const cur = raw == null ? NaN : Number(raw);
+      if (!Number.isSafeInteger(cur) || generation > cur) ls?.setItem(GEN_KEY_PREFIX + scope, String(generation));
+    } catch {
+      /* storage blocked / quota */
+    }
+  },
+};
 
 async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
   const ds = new DecompressionStream("gzip");
@@ -37,12 +86,43 @@ async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-/** Fetch the signed index and verify it against the catalog key. */
+/**
+ * Fetch the signed index, verify it against the catalog key, and enforce
+ * rollback protection: the (signed) `generation` must equal the generation the
+ * URL was pinned to, and must not be lower than the highest generation this
+ * client has already verified for the same origin + key. A stale/compromised
+ * edge can therefore not replay an older, validly-signed index.
+ */
 export async function resolveIndex(ctx: InstallContext): Promise<SignedIndex> {
+  const store = ctx.generations ?? defaultGenerationStore;
+  const scope = generationScope(ctx);
+  const highest = await store.get(scope);
+  let expected = await ctx.cdn.expectedGeneration();
+  if (expected !== null && highest !== null && expected < highest) {
+    // The versions API lagged behind what we've already verified: ask for the
+    // newer generation instead of failing the rollback check below.
+    ctx.cdn.pinGeneration(highest);
+    expected = highest;
+  }
   const index = await ctx.cdn.fetchJson<SignedIndex>(await ctx.cdn.indexUrl());
   const v = await verifySigned(index as unknown as Record<string, unknown>, ctx.key);
   if (!v.ok) throw new Error(`catalog: index signature invalid (${v.reason})`);
+
+  const gen = index.generation;
+  if (!Number.isSafeInteger(gen) || gen < 0) throw new Error(`catalog: index has an invalid generation (${String(gen)})`);
+  if (expected !== null && gen !== expected) {
+    throw new Error(`catalog: index generation ${gen} does not match the requested generation ${expected}`);
+  }
+  if (highest !== null && gen < highest) {
+    throw new Error(`catalog: index generation ${gen} is older than the newest already seen (${highest}) — possible rollback`);
+  }
+  await store.set(scope, gen);
   return index;
+}
+
+/** Rollback scope: origin + verification key (a different catalog is a different scope). */
+function generationScope(ctx: InstallContext): string {
+  return `${ctx.cdn.originId}|${ctx.keyId ?? (ctx.key ? "custom" : "bundled")}`;
 }
 
 /** Resolve `name` or `name@version` to a verified manifest. */
@@ -80,10 +160,17 @@ function cmpVersion(a: string, b: string): number {
   return 0;
 }
 
-/** Fetch one chunk, verify its sha256, and cache it. Cache hit skips the network. */
+/**
+ * Fetch one chunk, verify its sha256, and cache it. A cache hit skips the
+ * network but is re-verified too (a corrupted/tampered cache entry is evicted
+ * and refetched).
+ */
 export async function fetchVerifiedChunk(ctx: InstallContext, sha256: string): Promise<Uint8Array> {
   const cached = await ctx.cache.get(sha256);
-  if (cached) return cached;
+  if (cached) {
+    if ((await sha256Hex(cached)) === sha256) return cached;
+    await ctx.cache.delete?.(sha256);
+  }
   const bytes = await ctx.cdn.fetchBytes(await ctx.cdn.casUrl(sha256));
   if ((await sha256Hex(bytes)) !== sha256) throw new Error(`catalog: chunk hash mismatch ${sha256}`);
   await ctx.cache.put(sha256, bytes);
@@ -146,7 +233,7 @@ export async function installApp(
         opts.onProgress?.({ phase: "chunk", file: file.path, chunk, fetched, total }),
       );
       opts.onProgress?.({ phase: "write", file: file.path });
-      target.writeFile(file.path, bytes, parseInt(file.mode, 8) || undefined);
+      await target.writeFile(file.path, bytes, parseInt(file.mode, 8) || undefined);
     }
   }
   opts.onProgress?.({ phase: "done" });

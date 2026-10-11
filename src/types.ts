@@ -135,6 +135,10 @@ export interface ExecOptions {
   onData?: (chunk: string) => void;
   /** Instruction budget. Default 2_000_000 (raised to 2e9 for node). */
   maxSteps?: number;
+  /** Working directory — honored by `node()` (run/shExec start at "/"). */
+  cwd?: string;
+  /** Extra environment variables — honored by `node()`. */
+  env?: Record<string, string>;
 }
 
 export interface ExecResult {
@@ -195,7 +199,8 @@ export interface ShellHost {
 // --- serve ---
 
 export interface ConnectionInjector {
-  injectConnection(port: number, httpRequest: string): Promise<Uint8Array>;
+  /** Inject one raw HTTP/1.1 request (string, or bytes for binary bodies). */
+  injectConnection(port: number, httpRequest: string | Uint8Array): Promise<Uint8Array>;
 }
 
 export interface ServeBridgeOptions {
@@ -223,7 +228,7 @@ export type ServerLaunch = { node: string[] } | { command: string };
 
 // --- node runtime ---
 
-export interface NodeRunOptions extends ExecOptions {
+export interface NodeRunOptions extends Omit<ExecOptions, "cwd" | "env"> {
   extraFiles?: Array<{ path: string; content: string | Uint8Array }>;
 }
 

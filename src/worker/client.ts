@@ -31,17 +31,32 @@ function stripOnData<T extends { onData?: unknown }>(opts?: T): Omit<T, "onData"
   return copy as Omit<T, "onData">;
 }
 
+/**
+ * The config's ArrayBuffers, deduped (transferring the same buffer twice throws
+ * a DataCloneError). Only used when the caller opts in via
+ * {@link NanoWorkerOptions.transferBuffers}, since transfer detaches them.
+ */
 function collectTransfers(config: NanoConfig): Transferable[] {
-  const t: Transferable[] = [];
+  const t = new Set<ArrayBuffer>();
   const add = (s: unknown): void => {
-    if (s instanceof ArrayBuffer) t.push(s);
+    if (s instanceof ArrayBuffer) t.add(s);
   };
   add(config.image.wasm);
   add(config.image.busybox);
   add(config.image.node);
   for (const o of config.image.overlays ?? []) add(o);
   add(config.scripting?.wasm);
-  return t;
+  return [...t];
+}
+
+/** Options for {@link createNanoWorker} / {@link NanoWorkerClient.create}. */
+export interface NanoWorkerOptions {
+  /**
+   * Transfer (zero-copy) the config's ArrayBuffers (wasm, overlays, …) to the
+   * worker instead of copying them. Saves memory for large images, but DETACHES
+   * the caller's buffers — they are unusable afterwards. Default false (copy).
+   */
+  transferBuffers?: boolean;
 }
 
 /**
@@ -50,8 +65,13 @@ function collectTransfers(config: NanoConfig): Transferable[] {
  * before the next eval (the {@link ScriptEngine} surface returns void for them).
  */
 class WorkerScriptEngine implements ScriptEngine {
-  /** Serializes registerFunction/defineGlobal ahead of the next eval. */
-  private ready: Promise<unknown> = Promise.resolve();
+  /** Serializes registerFunction/defineGlobal ahead of the next eval. Never rejects. */
+  private ready: Promise<void> = Promise.resolve();
+  /** First failure of a queued registerFunction/defineGlobal, surfaced by the next eval. */
+  private queuedError: unknown = null;
+  /** Main-thread callback ids owned by this engine (freed on dispose). */
+  private readonly callbackIds: number[] = [];
+  private disposed = false;
 
   constructor(
     private readonly client: NanoWorkerClient,
@@ -61,26 +81,56 @@ class WorkerScriptEngine implements ScriptEngine {
   ) {}
 
   async eval(source: string): Promise<unknown> {
-    await this.ready;
+    await this.flushQueue();
     return this.client.call("script", "eval", [this.engineId, source], this.onData);
   }
   async evalModule(source: string, specifier?: string): Promise<unknown> {
-    await this.ready;
+    await this.flushQueue();
     return this.client.call("script", "evalModule", [this.engineId, source, specifier], this.onData);
   }
   registerFunction(name: string, fn: (...args: any[]) => unknown | Promise<unknown>): void {
     const callbackId = this.client.registerCallback(fn as HostCallback);
+    this.callbackIds.push(callbackId);
     this.enqueue(["registerFunction", [this.engineId, name, callbackId]]);
   }
   defineGlobal(name: string, value: unknown): void {
     this.enqueue(["defineGlobal", [this.engineId, name, value]]);
   }
   dispose(): void {
-    void this.client.call("script", "disposeEngine", [this.engineId]);
+    if (this.disposed) return;
+    this.disposed = true;
+    // Ordered after any queued registerFunction/defineGlobal, then free the
+    // main-thread callbacks this engine registered.
+    const ids = this.callbackIds.splice(0);
+    void this.ready
+      .then(() => this.client.call("script", "disposeEngine", [this.engineId]))
+      .catch(() => undefined)
+      .then(() => {
+        for (const id of ids) this.client.unregisterCallback(id);
+      });
+  }
+
+  /** Wait for queued ops; throw (once) the first queued failure. */
+  private async flushQueue(): Promise<void> {
+    if (this.disposed) throw new Error("nano-sdk: script engine is disposed");
+    await this.ready;
+    if (this.queuedError) {
+      const e = this.queuedError;
+      this.queuedError = null;
+      throw e;
+    }
   }
 
   private enqueue([method, args]: [string, unknown[]]): void {
-    this.ready = this.ready.then(() => this.client.call("script", method, args));
+    // One failed op must not poison every later eval: record it, keep the chain alive.
+    this.ready = this.ready
+      .then(() => this.client.call("script", method, args))
+      .then(
+        () => undefined,
+        (e: unknown) => {
+          this.queuedError ??= e;
+        },
+      );
   }
 }
 
@@ -152,6 +202,8 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   /** Main-thread script callbacks invoked via worker reverse-RPC (registerFunction). */
   private callbackSeq = 1;
   private readonly callbacks = new Map<number, HostCallback>();
+  /** Set by destroy() (or a fatal worker error): every pending/future call rejects. */
+  private destroyed: Error | null = null;
 
   private constructor(private readonly worker: Worker) {
     this.fs = new WorkerFs(this);
@@ -159,9 +211,22 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
     worker.addEventListener("error", (ev) => this.onError(ev));
   }
 
-  static async create(config: NanoConfig, worker: Worker): Promise<NanoWorkerClient> {
+  static async create(
+    config: NanoConfig,
+    worker: Worker,
+    opts: NanoWorkerOptions = {},
+  ): Promise<NanoWorkerClient> {
     const client = new NanoWorkerClient(worker);
-    await client.send({ id: client.seq++, kind: "create", config }, collectTransfers(config));
+    try {
+      await client.send(
+        { id: client.seq++, kind: "create", config },
+        opts.transferBuffers ? collectTransfers(config) : undefined,
+      );
+    } catch (e) {
+      // Don't leak the worker (and its half-built VM) when creation fails.
+      client.shutdown(new Error("nano-sdk: worker VM creation failed"));
+      throw e;
+    }
     return client;
   }
 
@@ -204,6 +269,11 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
     return id;
   }
 
+  /** Free a callback registered via {@link registerCallback}. */
+  unregisterCallback(id: number): void {
+    this.callbacks.delete(id);
+  }
+
   private onError(ev: ErrorEvent): void {
     const err = new Error(`nano-sdk worker error: ${ev.message}`);
     for (const [, p] of this.pending) p.reject(err);
@@ -220,10 +290,26 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   }
 
   private send(req: Req, transfer?: Transferable[], onData?: DataCb): Promise<unknown> {
+    if (this.destroyed) return Promise.reject(this.destroyed);
     return new Promise((resolve, reject) => {
       this.pending.set(req.id, { resolve, reject, onData });
-      this.worker.postMessage(req, transfer ?? []);
+      try {
+        this.worker.postMessage(req, transfer ?? []);
+      } catch (e) {
+        this.pending.delete(req.id);
+        reject(e);
+      }
     });
+  }
+
+  /** Terminate the worker and reject every pending (and future) call with `reason`. */
+  private shutdown(reason: Error): void {
+    if (this.destroyed) return;
+    this.destroyed = reason;
+    this.worker.terminate();
+    for (const [, p] of this.pending) p.reject(reason);
+    this.pending.clear();
+    this.callbacks.clear();
   }
 
   // --- core surface (mirrors Nano) ---
@@ -242,7 +328,7 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   readText(path: string): Promise<string | null> {
     return this.call("nano", "readText", [path]) as Promise<string | null>;
   }
-  injectConnection(port: number, httpRequest: string): Promise<Uint8Array> {
+  injectConnection(port: number, httpRequest: string | Uint8Array): Promise<Uint8Array> {
     return this.call("server", "injectConnection", [port, httpRequest]) as Promise<Uint8Array>;
   }
   // Generic, runtime-agnostic snapshot/restore (recipe-driven; see provision()).
@@ -263,6 +349,13 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   restoreRun(script: string, opts?: NodeRunOptions): Promise<ExecResult> {
     return this.call("vm", "restoreRun", [script, stripOnData(opts)], opts?.onData) as Promise<ExecResult>;
   }
+  /**
+   * Like {@link restoreRun} for a long-running server: while it runs, other VM
+   * calls on this client reject ("VM is busy serving") until {@link cancel}.
+   */
+  restoreServe(script: string, opts?: NodeRunOptions): Promise<ExecResult> {
+    return this.call("vm", "restoreServe", [script, stripOnData(opts)], opts?.onData) as Promise<ExecResult>;
+  }
   writeStdin(data: Uint8Array | string): void {
     void this.call("nano", "writeStdin", [data]);
   }
@@ -275,9 +368,16 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   cancel(): void {
     void this.call("nano", "cancel", []);
   }
+  /** Terminate the worker. Pending calls reject; later calls reject immediately. */
   destroy(): void {
-    void this.call("nano", "destroy", []);
-    this.worker.terminate();
+    if (this.destroyed) return;
+    // Best-effort in-worker teardown; terminate() follows regardless.
+    try {
+      this.worker.postMessage({ id: this.seq++, kind: "call", target: "nano", method: "destroy", args: [], stream: false });
+    } catch {
+      /* ignore */
+    }
+    this.shutdown(new Error("nano-sdk: worker client destroyed"));
   }
 
   // --- scripting (boa.wasm hosted in the worker; spec §6.5) ---
@@ -307,13 +407,17 @@ export class NanoWorkerClient implements ShellHost, ConnectionInjector {
   }
 }
 
-/** Spawn a worker-hosted VM and return a client with the core surface. */
+/**
+ * Spawn a worker-hosted VM and return a client with the core surface. The
+ * config's buffers are copied to the worker unless `opts.transferBuffers`.
+ */
 export async function createNanoWorker(
   config: NanoConfig,
   workerFactory?: () => Worker,
+  opts?: NanoWorkerOptions,
 ): Promise<NanoWorkerClient> {
   const worker = workerFactory
     ? workerFactory()
     : new Worker(new URL("./worker/worker.js", import.meta.url), { type: "module" });
-  return NanoWorkerClient.create(config, worker);
+  return NanoWorkerClient.create(config, worker, opts);
 }

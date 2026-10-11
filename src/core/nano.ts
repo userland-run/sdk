@@ -12,6 +12,7 @@ import type {
   NanoConfig,
   ScriptEngine,
   ScriptEngineOptions,
+  ServerLaunch,
   ShellHost,
   ShellOptions,
 } from "../types";
@@ -23,8 +24,17 @@ import { NodeRuntime } from "../node/node-runtime";
 import { createLocalEngine, loadBoaRuntime, type ScriptVmDriver } from "../scripting/script-engine";
 import { Catalog, type CatalogOptions, type BundleInstallResult } from "../catalog/catalog";
 import type { InstallOptions, Manifest } from "../catalog/types";
-import { manifestKind } from "../catalog/types";
+import { isWasmKind, manifestKind } from "../catalog/types";
 import { loadNodertEngine, loadWasiServiceRunner, loadWasmAppRunner, isRuntimeUnavailable, type NodertEngine } from "../node/node-engine";
+
+/**
+ * The slice of the vendored Kernel the SDK touches (process table + spawn
+ * router). Typed here so call sites don't need `as unknown as { _kernel: any }`.
+ */
+interface KernelHandle {
+  router: { delegateFor(tier: string): ((req: Record<string, unknown>) => Promise<unknown>) | undefined };
+  registerProcess(spec: { kind: string; argv: string[] }): { caps: unknown };
+}
 
 /** Single-quote-escape one argv element for safe sh interpolation. */
 function singleQuote(arg: string): string {
@@ -84,10 +94,87 @@ export class Nano implements ShellHost, ConnectionInjector {
   private nodertEngine: Promise<NodertEngine> | null = null;
   /** Cached parent process for direct wasm-app spawns (see {@link execWasmApp}). */
   private _wasmAppParent: { caps: unknown } | null = null;
+  /**
+   * Tail of the VM mutex chain. NanoVM is single-threaded per instance: every
+   * run resets the VM state, so two overlapping runs would clobber each other.
+   * All VM-occupying ops (run/shExec/node/fs mutations/snapshots) chain here.
+   */
+  private vmLock: Promise<unknown> = Promise.resolve();
+  /** True while a long-lived server launch (startServer) holds the VM. */
+  private serverHeld = false;
 
   private constructor(raw: NanoVM) {
     this.raw = raw;
-    this.fs = new Vfs(raw);
+    this.fs = new Vfs(raw, (fn) => this.withVmLock(fn));
+  }
+
+  /** The VM's shared Kernel (process table, router, VFS) — typed escape hatch. */
+  private get kernel(): KernelHandle {
+    return (this.raw as unknown as { _kernel: KernelHandle })._kernel;
+  }
+
+  /**
+   * Run `fn` with exclusive use of the VM. Ops are serialized FIFO (a promise-
+   * chain mutex), so overlapping run/shExec/node/fs-mutation/snapshot calls
+   * queue instead of resetting each other's VM state. Use this to wrap direct
+   * {@link Nano.raw} execution so it composes with SDK calls. Not re-entrant:
+   * don't call another VM-occupying Nano method from inside `fn`.
+   *
+   * While a server started via {@link startServer} holds the VM (its run never
+   * resolves until `stop()`), new ops reject immediately with a clear error
+   * instead of queueing forever.
+   */
+  withVmLock<T>(fn: () => Promise<T>): Promise<T> {
+    return this.acquireVm(fn, false);
+  }
+
+  /**
+   * Like {@link withVmLock}, for a long-lived server run (`fn` settles only
+   * when the server exits or is cancelled): until then, other VM ops reject
+   * fast instead of queueing behind it. Used by {@link launchServer} and the
+   * worker's snapshot-restored serve path.
+   */
+  withVmServerLock<T>(fn: () => Promise<T>): Promise<T> {
+    return this.acquireVm(fn, true);
+  }
+
+  private acquireVm<T>(fn: () => Promise<T>, server: boolean): Promise<T> {
+    if (this.serverHeld) {
+      return Promise.reject(
+        new Error(
+          "nano-sdk: the VM is busy serving (a startServer() launch holds it until stop()); " +
+            "stop the server, or use a second Nano / worker instance for concurrent runs.",
+        ),
+      );
+    }
+    if (server) this.serverHeld = true;
+    // (`??` tolerates instances built off the prototype, e.g. test doubles.)
+    const result = (this.vmLock ?? Promise.resolve()).then(fn);
+    this.vmLock = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    if (server) {
+      void this.vmLock.then(() => {
+        this.serverHeld = false;
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Launch a long-lived in-VM server (used by {@link startServer}). It takes the
+   * VM lock like any run, and marks the VM server-held so later runs fail fast
+   * rather than queue behind a run that never resolves. Released when the run
+   * settles (process exit or {@link cancel}).
+   */
+  launchServer(launch: ServerLaunch, opts?: ExecOptions): Promise<ExecResult> {
+    if ("node" in launch) {
+      // A host-engine (nodert) server doesn't occupy the VM; only pin the VM path.
+      if (this.resolveNodeEngine(launch.node) !== "vm") return this.node(launch.node, opts);
+      return this.withVmServerLock(() => this.vmNodeUnlocked(launch.node, opts));
+    }
+    return this.withVmServerLock(() => this.shExecUnlocked(launch.command, opts));
   }
 
   /** The in-VM HTTP connection injector (for serve mode). */
@@ -107,10 +194,18 @@ export class Nano implements ShellHost, ConnectionInjector {
 
     const { createOpts, overlays, revoke } = await resolveImage(config.image);
     const ramMB = config.ramMB ?? defaultRamMB(createOpts.wasm);
-    let raw: NanoVM;
+    let raw: NanoVM | undefined;
     try {
       raw = await NanoVM.create({ ...createOpts, ramMB });
       for (const ov of overlays) await raw.loadTarGz(ov);
+    } catch (e) {
+      // Don't leak a half-initialized VM (its guest RAM) when an overlay fails.
+      try {
+        raw?.destroy();
+      } catch {
+        /* ignore */
+      }
+      throw e;
     } finally {
       revoke();
     }
@@ -134,7 +229,7 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   /** Raw BusyBox run; whitespace-split argv, no shell parsing (§2.4). */
   run(command: string, opts?: ExecOptions): Promise<ExecResult> {
-    return this.raw.run(command, toRuntimeOpts(opts));
+    return this.withVmLock(() => this.raw.run(command, toRuntimeOpts(opts)));
   }
 
   /**
@@ -144,6 +239,11 @@ export class Nano implements ShellHost, ConnectionInjector {
    * nodert and falls back to the VM on a documented `ERR_NODE_HOST_UNSUPPORTED`
    * (or if the nodert runtime isn't reachable in this build). A `routing` pin
    * forces a specific program to a tier.
+   *
+   * `opts.cwd` / `opts.env` set the working directory and extra environment.
+   * On the host engine they are passed straight through; on the VM they are
+   * applied via a one-shot sh wrapper (which needs `/usr/bin/node` in the VFS —
+   * with only an embedded node ELF they are ignored).
    */
   async node(args: string[], opts?: ExecOptions): Promise<ExecResult> {
     const engine = this.resolveNodeEngine(args);
@@ -167,6 +267,8 @@ export class Nano implements ShellHost, ConnectionInjector {
     const onData = opts?.onData;
     const r = await nodert.node(["node", ...args], {
       engine,
+      ...(opts?.cwd !== undefined ? { cwd: opts.cwd } : {}),
+      ...(opts?.env !== undefined ? { env: opts.env } : {}),
       onStdout: onData ? (b: Uint8Array) => onData(dec.decode(b)) : undefined,
       onStderr: onData ? (b: Uint8Array) => onData(dec.decode(b)) : undefined,
     });
@@ -176,6 +278,22 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   /** The VM node path (the RISC-V ELF). Also the nodert `auto` fallback. */
   private vmNode(args: string[], opts?: ExecOptions): Promise<ExecResult> {
+    return this.withVmLock(() => this.vmNodeUnlocked(args, opts));
+  }
+
+  private vmNodeUnlocked(args: string[], opts?: ExecOptions): Promise<ExecResult> {
+    const hasCtx = opts?.cwd !== undefined || (opts?.env && Object.keys(opts.env).length > 0);
+    if (hasCtx && this.fs.readFile("/usr/bin/node")) {
+      // raw.node() always starts at "/" with a fixed env; honor cwd/env via a
+      // sh wrapper that execs the VFS node (same ELF, same argv).
+      const lines = Object.entries(opts?.env ?? {}).map(([k, v]) => `export ${k}=${singleQuote(v)}`);
+      if (opts?.cwd !== undefined) lines.push(`cd ${singleQuote(opts.cwd)} 2>/dev/null || cd /`);
+      lines.push(`UV_THREADPOOL_SIZE=0 exec /usr/bin/node ${args.map(singleQuote).join(" ")}`);
+      return this.shExecUnlocked(lines.join("\n"), {
+        ...opts,
+        maxSteps: opts?.maxSteps ?? NODE_DEFAULT_MAX_STEPS,
+      });
+    }
     return this.raw.node(...args, toRuntimeOpts(opts, NODE_DEFAULT_MAX_STEPS));
   }
 
@@ -185,7 +303,8 @@ export class Nano implements ShellHost, ConnectionInjector {
    * the engine selector's `auto` → VM fallback on ERR_NODE_HOST_UNSUPPORTED.
    */
   private getNodertEngine(): Promise<NodertEngine> {
-    this.nodertEngine ??= loadNodertEngine((this.raw as unknown as { _kernel: unknown })._kernel, {
+    if (this.nodertEngine) return this.nodertEngine;
+    const loading = loadNodertEngine(this.kernel, {
       engine: this.nodeEngine,
       routing: this.nodeRouting,
       vmRun: async (argv: string[]) => {
@@ -195,7 +314,12 @@ export class Nano implements ShellHost, ConnectionInjector {
         return { exitCode: res.exitCode, stdout: res.stdout, stderr: "", signal: null };
       },
     });
-    return this.nodertEngine;
+    this.nodertEngine = loading;
+    // Don't cache a failed load forever (e.g. a transient network error).
+    loading.catch(() => {
+      if (this.nodertEngine === loading) this.nodertEngine = null;
+    });
+    return loading;
   }
 
   /**
@@ -218,9 +342,22 @@ export class Nano implements ShellHost, ConnectionInjector {
 
   /** Full sh line/script, one-shot: written to a file and run as `sh <file>`. */
   shExec(line: string, opts?: ExecOptions): Promise<ExecResult> {
+    return this.withVmLock(() => this.shExecUnlocked(line, opts));
+  }
+
+  private async shExecUnlocked(line: string, opts?: ExecOptions): Promise<ExecResult> {
     const path = `/tmp/.nano-exec-${(this.execSeq++).toString(36)}.sh`;
     this.raw.addFile(path, line.endsWith("\n") ? line : line + "\n");
-    return this.raw.run(`sh ${path}`, toRuntimeOpts(opts));
+    try {
+      return await this.raw.run(`sh ${path}`, toRuntimeOpts(opts));
+    } finally {
+      // Remove the one-shot script so /tmp doesn't accumulate them.
+      try {
+        this.raw._memfs.unlink(path, 0);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   /** {@link ShellHost} member — synchronous text read. */
@@ -229,7 +366,7 @@ export class Nano implements ShellHost, ConnectionInjector {
   }
 
   /** {@link ConnectionInjector} member — used by the serve bridge. */
-  injectConnection(port: number, httpRequest: string): Promise<Uint8Array> {
+  injectConnection(port: number, httpRequest: string | Uint8Array): Promise<Uint8Array> {
     return this.raw.virtualServer.injectConnection(port, httpRequest);
   }
 
@@ -290,10 +427,19 @@ export class Nano implements ShellHost, ConnectionInjector {
   // --- catalog (install signed apps from the CDN) ---
 
   private _catalog?: Catalog;
+  private _catalogOpts?: CatalogOptions;
 
-  /** The lazily-created default {@link Catalog} (bundled key, OPFS cache, jsDelivr). */
+  /**
+   * The lazily-created {@link Catalog} (default: bundled key, OPFS cache,
+   * jsDelivr). Calling with no options returns the current instance; passing
+   * options different from the current instance's creates (and caches) a new one.
+   */
   catalog(opts?: CatalogOptions): Catalog {
-    return (this._catalog ??= new Catalog(opts));
+    if (!this._catalog || (opts !== undefined && !sameCatalogOpts(opts, this._catalogOpts))) {
+      this._catalog = new Catalog(opts);
+      this._catalogOpts = opts;
+    }
+    return this._catalog;
   }
 
   /**
@@ -314,7 +460,16 @@ export class Nano implements ShellHost, ConnectionInjector {
    * ```
    */
   async installApp(ref: string, opts?: InstallOptions): Promise<Manifest> {
-    const manifest = await this.catalog().install(this.fs, ref, opts);
+    const catalog = this.catalog();
+    // wasm-app / wasm-service modules are registered from their bytes right
+    // after install, so a lazy (demand-fetched) install would leave nothing to
+    // read. Resolve the manifest first and install wasm kinds eagerly.
+    let installOpts = opts;
+    if (opts?.lazy) {
+      const peek = await catalog.manifest(ref);
+      if (isWasmKind(manifestKind(peek))) installOpts = { ...opts, lazy: false };
+    }
+    const manifest = await catalog.install(this.fs, ref, installOpts);
     const kind = manifestKind(manifest);
     if (kind === "wasm-service") await this.registerWasmService(manifest);
     else if (kind === "wasm-app") await this.registerWasmAppFromManifest(manifest);
@@ -334,7 +489,7 @@ export class Nano implements ShellHost, ConnectionInjector {
     if (!bytes) throw new Error(`nano-sdk: wasm-service '${manifest.name}' file ${file.path} not readable`);
     const { registerWasmServiceFromManifest } = await loadWasiServiceRunner();
     return registerWasmServiceFromManifest(
-      (this.raw as unknown as { _kernel: unknown })._kernel,
+      this.kernel,
       manifest,
       bytes,
       opts,
@@ -366,7 +521,7 @@ export class Nano implements ShellHost, ConnectionInjector {
    * — see the consumer setup checklist).
    */
   async registerWasmApp(name: string, wasmBytes: Uint8Array): Promise<() => void> {
-    const runner = await loadWasmAppRunner((this.raw as unknown as { _kernel: unknown })._kernel);
+    const runner = await loadWasmAppRunner(this.kernel);
     return runner.register(name, wasmBytes);
   }
 
@@ -383,14 +538,13 @@ export class Nano implements ShellHost, ConnectionInjector {
     argv: string[],
     opts: { cwd?: string; timeoutMs?: number } = {},
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    /* eslint-disable @typescript-eslint/no-explicit-any */
-    const k = (this.raw as unknown as { _kernel: any })._kernel;
-    const delegate = k.router.delegateFor("wasm-app") as ((req: any) => Promise<any>) | undefined;
+    const k = this.kernel;
+    const delegate = k.router.delegateFor("wasm-app");
     if (!delegate) {
       throw new Error("nano-sdk: no wasm-app is registered — call installApp() for a kind:\"wasm-app\" app or registerWasmApp(name, bytes) first");
     }
     this._wasmAppParent ??= k.registerProcess({ kind: "wasm", argv: ["nano-wasm-app"] });
-    const parent = this._wasmAppParent as any;
+    const parent = this._wasmAppParent;
     const r = (await delegate({
       parent,
       argv,
@@ -431,6 +585,17 @@ export class Nano implements ShellHost, ConnectionInjector {
   destroy(): void {
     this.raw.destroy();
   }
+}
+
+/** Shallow structural compare of two CatalogOptions (cdn/cache/key identity). */
+function sameCatalogOpts(a?: CatalogOptions, b?: CatalogOptions): boolean {
+  return (
+    a?.cache === b?.cache &&
+    a?.publicKeyB64 === b?.publicKeyB64 &&
+    a?.generations === b?.generations &&
+    a?.cdn?.baseUrl === b?.cdn?.baseUrl &&
+    a?.cdn?.fetchFn === b?.cdn?.fetchFn
+  );
 }
 
 export function createNano(config: NanoConfig): Promise<Nano> {

@@ -12,7 +12,9 @@ The vendored copy and the upstream container copy have legitimately diverged in
 
 - **vendor-only** — lazy catalog demand-fetch (`_lazyFiles`, `registerLazyFile`,
   `_maybeMaterializeLazy`, and its run-loop hook). The SDK installs catalog apps
-  lazily; the bare container does not.
+  lazily; the bare container does not. Also `VirtualServer.injectConnection`
+  accepts a `Uint8Array` request (binary-safe request bodies from the service
+  worker) in addition to a string.
 - **container-only** — the boa scripting engine (dynamic `import("./boa.mjs")`)
   and the live server-footer indicators (`_serverMode`, `_servingPort`,
   banner-port detection). The SDK exposes scripting through its own module and

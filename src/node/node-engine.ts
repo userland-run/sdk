@@ -55,11 +55,30 @@ const CANDIDATE_PREFIXES = ["../", "./", "/"];
 // runtime import in every bundler (magic comments like @vite-ignore /
 // webpackIgnore are unreliable — Next.js's minifier strips them). The vendored
 // worker tree is then loaded from disk (dist/vendor) or the site root (/vendor),
-// never bundled. Indirect eval needs no `unsafe-eval` beyond what a normal app allows.
-const nativeImport = new Function("u", "return import(u)") as (u: string) => Promise<unknown>;
+// never bundled.
+//
+// NOTE: `new Function` is eval-equivalent — under a strict CSP without
+// `'unsafe-eval'` it throws EvalError. So it is created LAZILY (only when a
+// host-engine/wasm runner is actually requested, never at module load), and a
+// CSP failure surfaces as ERR_NODE_HOST_RUNTIME_UNAVAILABLE ("auto" then falls
+// back to the VM) instead of breaking the whole SDK import.
+let nativeImportFn: ((u: string) => Promise<unknown>) | null = null;
 
 async function importFromCandidates<T>(subpath: string, file: string, what = "nodert host-engine"): Promise<T> {
   let lastErr: unknown = null;
+  let nativeImport: (u: string) => Promise<unknown>;
+  try {
+    nativeImport = nativeImportFn ??= new Function("u", "return import(u)") as (u: string) => Promise<unknown>;
+  } catch (e) {
+    // Strict CSP (no 'unsafe-eval'): the runtime loader can't be built here.
+    const err = new Error(
+      `nano-sdk: the ${what} runtime cannot be loaded in this context (dynamic import ` +
+        "construction was blocked, likely by a Content-Security-Policy without 'unsafe-eval').",
+    );
+    (err as { code?: string; cause?: unknown }).code = "ERR_NODE_HOST_RUNTIME_UNAVAILABLE";
+    (err as { cause?: unknown }).cause = e;
+    throw err;
+  }
   for (const prefix of CANDIDATE_PREFIXES) {
     try {
       // Site-root candidate ("/"): pass a BARE root-relative specifier so the
@@ -102,10 +121,16 @@ export async function loadNodertEngine(
 ): Promise<NodertEngine> {
   cachedEngineMod ??= importFromCandidates<{ createNodeEngine: Function }>(NODERT_SUBPATH, "engine.mjs");
   cachedDelegateMod ??= importFromCandidates<{ registerNodertDelegate: Function }>(NODERT_SUBPATH, "delegate.mjs");
-  const [{ createNodeEngine }, { registerNodertDelegate }] = await Promise.all([
-    cachedEngineMod,
-    cachedDelegateMod,
-  ]);
+  let mods: [{ createNodeEngine: Function }, { registerNodertDelegate: Function }];
+  try {
+    mods = await Promise.all([cachedEngineMod, cachedDelegateMod]);
+  } catch (e) {
+    // Don't cache a failed load: a later call may succeed (e.g. transient fetch).
+    cachedEngineMod = null;
+    cachedDelegateMod = null;
+    throw e;
+  }
+  const [{ createNodeEngine }, { registerNodertDelegate }] = mods;
   // Register the router delegate once per kernel so cross-tier execve works.
   const k = kernel as { __nodertDelegateRegistered?: boolean };
   if (!k.__nodertDelegateRegistered) {

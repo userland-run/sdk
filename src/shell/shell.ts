@@ -106,10 +106,13 @@ export class Shell {
       return this.runScript(trimmed.slice(this.scriptCommand.length + 1), opts);
     }
 
-    // 2. node routing: `node …` with no shell control operators.
+    // 2. node routing: `node …` with no shell control operators. The session's
+    // cwd/env ride along so `cd app && node x.js` semantics hold across lines.
     if (/^node\s/.test(trimmed) && !hasControlOperators(trimmed)) {
       const args = tokenize(trimmed).slice(1);
-      return this.result(await this.host.node(args, opts));
+      return this.result(
+        await this.host.node(args, { ...opts, cwd: this.cwd, env: { ...this.env } }),
+      );
     }
 
     // 3. general command: per-command script via shExec, then cwd round-trip.

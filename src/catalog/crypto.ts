@@ -19,12 +19,23 @@ const b64ToBytes = (b64: string): Uint8Array =>
 const toHex = (buf: ArrayBuffer): string =>
   Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
 
-/** Deterministic JSON: object keys sorted recursively; array order preserved. */
+/** undefined / function / symbol: values JSON.stringify can't represent. */
+const isSkippable = (v: unknown): boolean =>
+  v === undefined || typeof v === "function" || typeof v === "symbol";
+
+/**
+ * Deterministic JSON: object keys sorted recursively; array order preserved.
+ * Mirrors JSON.stringify (and catalog tools/lib/manifest.mjs exactly) for
+ * values JSON can't represent: object members whose value is undefined / a
+ * function / a symbol are omitted, and such values inside arrays become null.
+ */
 export function canonicalize(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return "[" + value.map(canonicalize).join(",") + "]";
+  if (Array.isArray(value)) {
+    return "[" + value.map((v) => (isSkippable(v) ? "null" : canonicalize(v))).join(",") + "]";
+  }
   const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj).filter((k) => !isSkippable(obj[k])).sort();
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalize(obj[k])).join(",") + "}";
 }
 
