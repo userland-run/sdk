@@ -299,6 +299,81 @@ await folder.writeBack(); // { written: ["out/sorted.csv"], deleted: [], failed:
   `CompressionStream("deflate-raw")` where available and stores otherwise. There is no zip64, so the
   limits are 65,535 entries and 4 GiB. `folder.zip()` zips the mount itself.
 
+## Tools
+
+`@userland-run/nano-sdk/tools` runs a catalog app on a folder from the user's disk. A tool is a data-only
+definition; the built-ins are `exif` (exifstrip), `pdf` (pdfcpu), `csv-sql` (sqlite3) and `imagemagick`
+(magick on the RISC-V VM).
+
+```html
+<script type="module">
+  import { defineNanoTool } from "@userland-run/nano-sdk/tools";
+  defineNanoTool(); // <nano-tool>
+</script>
+<nano-tool tool="pdf" wasm-url="/nano.wasm" service-worker-url="/nano-sw.js" terminal url-params></nano-tool>
+```
+
+The element lets the user pick a folder (`showDirectoryPicker`, or `<input webkitdirectory>` where it's missing,
+then results download as a zip), choose a preset, edit the generated command, and press Run. It boots a VM on the
+first run, installs the tool's signed catalog apps, copies the folder to `/work` (`./folder`), runs the command,
+lists new and changed files with previews, and saves them back (never deleting) or zips them. A trust panel counts
+requests that leave the page's origin.
+
+- Attributes: `tool`, `wasm-url`, `service-worker-url`, `ram-mb` (default 512), `terminal` (adds a Terminal tab
+  with `<nano-terminal>` on the same folder, the command pre-typed), `no-terminal`, `preset`, `command`,
+  `url-params` (read `?preset=` / `?cmd=` and offer a share link). A command from an attribute or URL is validated
+  (one printable line that runs one of the tool's commands) and only pre-filled; nothing runs until Run is pressed.
+- Properties: `definition` (a custom definition), `appSource` (async `(app) => Uint8Array` to register local builds
+  instead of installing from the catalog, for development and tests), `loadTerminal` (for bundlers:
+  `() => import("@userland-run/nano-sdk/terminal")`), `hostNotes` (labels for the trust panel).
+- The host element mirrors `data-state` (`idle|running|done|error|stopped`), `data-exit` and `data-terminal`.
+  Theme it with `--nano-tool-*` custom properties (`--nano-tool-bg`, `-fg`, `-text`, `-accent`, `-border`,
+  `-font`, `-mono`, `-radius`, …).
+
+Headless, with a folder from `./folder`:
+
+```ts
+import { runTool } from "@userland-run/nano-sdk/tools";
+import { mountFolder } from "@userland-run/nano-sdk/folder";
+
+const folder = await mountFolder(nano, dirHandle, { at: "/work" });
+const r = await runTool(nano, { tool: "pdf", preset: "merge", values: { name: "all.pdf" }, folder, signal });
+// r = { exitCode, output, command: "mkdir -p out && pdfcpu merge -c disable out/all.pdf *.pdf", changes, cancelled }
+if (r.exitCode === 0) await folder.writeBack();
+```
+
+A definition is plain data, so a tool can be written for any catalog app:
+
+```ts
+const resize: ToolDefinition = {
+  id: "thumbs",
+  title: "Make thumbnails",
+  apps: [{ ref: "imagemagick", command: "magick", tier: "riscv" }],
+  accepts: ["jpg", "jpeg", "png"],
+  stepsPerFile: 15e9, // RISC-V runs are instruction-bounded: budget = this × matching files
+  presets: [{
+    id: "thumb", label: "Thumbnails", description: "800 px JPEGs in out/.",
+    fields: [{ id: "size", label: "Size", type: "number", default: 800, min: 16, max: 4000 }],
+    command: 'mkdir -p out && for f in *.jpg; do magick "$f" -thumbnail {{size}}x{{size}} out/"$f"; done',
+  }],
+};
+```
+
+Command templates are expanded by a fixed engine (no code from the definition runs), and every value is
+shell-quoted:
+
+| placeholder | expands to |
+| --- | --- |
+| `{{field}}` | the field's value, quoted (numbers as digits) |
+| `{{field? --flag}}` | ` --flag` when the checkbox is on / the value is non-empty |
+| `{{files:pdf}}` | the matching files, each quoted |
+| `{{each:csv:.import <path> <name>}}` | the text once per matching file, each quoted as one word; `<path>` is the file (double-quoted when needed), `<name>` an identifier from its stem |
+| `{{first:csv:name}}` | first matching file's identifier (or `:path`) — for field defaults |
+
+Field types: `text`, `textarea`, `number`, `select`, `checkbox`, `password`. A field with `env` is exported as
+that environment variable for the run and can't be templated, so passwords never appear in the command, a share
+link or the terminal history. `checkDefinition(def)` reports structural problems.
+
 ## Catalog
 
 Install signed, content-addressed apps from the CDN:

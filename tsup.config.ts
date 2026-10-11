@@ -19,6 +19,8 @@ export default defineConfig({
     agent: "src/agent/index.ts",
     // Local folder bridge (mount / diff / write back / zip); structural types only.
     folder: "src/folder/index.ts",
+    // Tools: definitions, templating, runTool and the <nano-tool> web component.
+    tools: "src/tools/index.ts",
     // The on-device-AI assistant's WebGPU model worker. The terminal source
     // spawns it via `new Worker(new URL("./local-worker.ts", import.meta.url))`
     // (Vite's worker syntax); esbuild/tsup leaves that URL verbatim, so we emit
@@ -39,6 +41,7 @@ export default defineConfig({
       "worker/worker": "src/worker/worker.ts",
       agent: "src/agent/index.ts",
       folder: "src/folder/index.ts",
+      tools: "src/tools/index.ts",
     },
   },
   bundle: true,

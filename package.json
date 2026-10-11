@@ -40,6 +40,10 @@
       "types": "./dist/folder.d.ts",
       "import": "./dist/folder.js"
     },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "import": "./dist/tools.js"
+    },
     "./terminal": {
       "types": "./types/terminal.d.ts",
       "import": "./dist/terminal.js"
